@@ -6,4 +6,5 @@
 
 pub mod apns;
 pub mod delivery;
+pub mod fcm;
 pub mod quotas;
