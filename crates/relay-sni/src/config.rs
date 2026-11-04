@@ -19,6 +19,7 @@
 //! | `RELAY_SNI_HANDSHAKE_TIMEOUT_SECS` | `10` | de la connexion d'une maison à `READY` |
 //! | `RELAY_SNI_PING_INTERVAL_SECS` | `25` | ping des tunnels |
 //! | `RELAY_SNI_WRITE_TIMEOUT_SECS` | `30` | écriture bloquée vers une maison ou un client |
+//! | `RELAY_SNI_IDLE_TIMEOUT_SECS` | `3600` | flux sans un octet dans aucun sens : fermé |
 //! | `RELAY_SNI_SHUTDOWN_GRACE_SECS` | `5` | délai entre `GOAWAY` et l'arrêt |
 
 use std::{
@@ -114,6 +115,7 @@ pub struct Limits {
     pub handshake_timeout: Duration,
     pub ping_interval: Duration,
     pub write_timeout: Duration,
+    pub idle_timeout: Duration,
     pub shutdown_grace: Duration,
 }
 
@@ -130,6 +132,7 @@ impl Default for Limits {
             handshake_timeout: Duration::from_secs(HANDSHAKE_TIMEOUT_SECS.into()),
             ping_interval: Duration::from_secs(PING_INTERVAL_SECS.into()),
             write_timeout: Duration::from_secs(30),
+            idle_timeout: Duration::from_secs(3600),
             shutdown_grace: Duration::from_secs(5),
         }
     }
@@ -201,6 +204,7 @@ impl SniConfig {
             handshake_timeout: secs("RELAY_SNI_HANDSHAKE_TIMEOUT_SECS", d.handshake_timeout)?,
             ping_interval: secs("RELAY_SNI_PING_INTERVAL_SECS", d.ping_interval)?,
             write_timeout: secs("RELAY_SNI_WRITE_TIMEOUT_SECS", d.write_timeout)?,
+            idle_timeout: secs("RELAY_SNI_IDLE_TIMEOUT_SECS", d.idle_timeout)?,
             shutdown_grace: secs("RELAY_SNI_SHUTDOWN_GRACE_SECS", d.shutdown_grace)?,
         };
         let addr = |name: &str, default: &str| -> Result<SocketAddr, ConfigError> {

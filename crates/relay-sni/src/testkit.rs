@@ -92,3 +92,169 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HouseConn<S> {
         frame
     }
 }
+
+// --- Maison qui sert du TLS par son tunnel -------------------------------------------------
+
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+
+use agendo_access_protocol::frame::{CloseCode, MAX_PAYLOAD, RecvWindow, SendWindow};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    net::TcpStream,
+    sync::{Mutex, Notify, mpsc},
+};
+
+/// Certificat auto-signé pour `host` : (configuration serveur, configuration client qui lui
+/// fait confiance).
+pub fn tls_pair(host: &str) -> (Arc<rustls::ServerConfig>, Arc<rustls::ClientConfig>) {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let cert = rcgen::generate_simple_self_signed(vec![host.to_owned()]).unwrap();
+    let cert_der = cert.cert.der().clone();
+    let key = rustls::pki_types::PrivateKeyDer::try_from(cert.key_pair.serialize_der()).unwrap();
+    let server = rustls::ServerConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der.clone()], key)
+        .unwrap();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert_der).unwrap();
+    let client = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    (Arc::new(server), Arc::new(client))
+}
+
+struct HouseStream {
+    send: std::sync::Mutex<SendWindow>,
+    credit: Notify,
+    to_app: mpsc::UnboundedSender<Vec<u8>>,
+    recv: std::sync::Mutex<RecvWindow>,
+}
+
+/// Fait tourner une maison sur un tunnel déjà prêt (`READY` reçu, fenêtre `window`) : chaque
+/// `OPEN` devient une connexion TLS servie par `tls`, dont l'application répond à chaque ligne
+/// `écho <ligne> de <client>`.
+pub async fn serve_tls<S>(conn: HouseConn<S>, window: u32, tls: Arc<rustls::ServerConfig>)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let HouseConn { io, mut reader } = conn;
+    let (mut rd, mut wr) = tokio::io::split(io);
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Frame>();
+    tokio::spawn(async move {
+        while let Some(frame) = out_rx.recv().await {
+            if write_frame(&mut wr, &frame).await.is_err() {
+                return;
+            }
+        }
+    });
+    let streams: Arc<Mutex<HashMap<u32, Arc<HouseStream>>>> = Arc::default();
+    while let Ok(Some(frame)) = reader.read(&mut rd).await {
+        match frame {
+            Frame::Open { stream, client } => {
+                let (app, pump) = tokio::io::duplex(1 << 20);
+                let (to_app, from_relay) = mpsc::unbounded_channel();
+                let s = Arc::new(HouseStream {
+                    send: std::sync::Mutex::new(SendWindow::new(window)),
+                    credit: Notify::new(),
+                    to_app,
+                    recv: std::sync::Mutex::new(RecvWindow::new(window)),
+                });
+                streams.lock().await.insert(stream, s.clone());
+                tokio::spawn(pump_stream(stream, s, pump, from_relay, out_tx.clone()));
+                tokio::spawn(echo_app(app, client, tls.clone()));
+            }
+            Frame::Data { stream, data } => {
+                if let Some(s) = streams.lock().await.get(&stream) {
+                    s.recv.lock().unwrap().receive(data.len()).unwrap();
+                    let _ = s.to_app.send(data);
+                }
+            }
+            Frame::Window { stream, increment } => {
+                if let Some(s) = streams.lock().await.get(&stream) {
+                    s.send.lock().unwrap().grant(increment).unwrap();
+                    s.credit.notify_one();
+                }
+            }
+            Frame::Close { stream, .. } => {
+                streams.lock().await.remove(&stream);
+            }
+            Frame::Ping { ts } => {
+                let _ = out_tx.send(Frame::Pong { ts });
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn pump_stream(
+    id: u32,
+    s: Arc<HouseStream>,
+    pump: tokio::io::DuplexStream,
+    mut from_relay: mpsc::UnboundedReceiver<Vec<u8>>,
+    out: mpsc::UnboundedSender<Frame>,
+) {
+    let (mut rd, mut wr) = tokio::io::split(pump);
+    let out2 = out.clone();
+    let s2 = s.clone();
+    // Relais → application, crédit rendu une fois écrit.
+    tokio::spawn(async move {
+        while let Some(data) = from_relay.recv().await {
+            if wr.write_all(&data).await.is_err() {
+                return;
+            }
+            if let Some(credit) = s2.recv.lock().unwrap().release(data.len()) {
+                let _ = out2.send(Frame::Window { stream: id, increment: credit });
+            }
+        }
+        let _ = wr.shutdown().await;
+    });
+    // Application → relais, dans la limite du crédit.
+    let mut buf = vec![0u8; MAX_PAYLOAD];
+    loop {
+        let available = loop {
+            let a = s.send.lock().unwrap().available() as usize;
+            if a > 0 {
+                break a;
+            }
+            s.credit.notified().await;
+        };
+        let n = match rd.read(&mut buf[..available.min(MAX_PAYLOAD)]).await {
+            Ok(0) | Err(_) => {
+                let _ = out.send(Frame::Close { stream: id, code: CloseCode::Normal });
+                return;
+            }
+            Ok(n) => n,
+        };
+        s.send.lock().unwrap().consume(n).unwrap();
+        let _ = out.send(Frame::Data { stream: id, data: buf[..n].to_vec() });
+    }
+}
+
+async fn echo_app(app: tokio::io::DuplexStream, client: SocketAddr, tls: Arc<rustls::ServerConfig>) {
+    let Ok(tls) = tokio_rustls::TlsAcceptor::from(tls).accept(app).await else { return };
+    let (rd, mut wr) = tokio::io::split(tls);
+    let mut lines = BufReader::new(rd).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if wr.write_all(format!("écho {line} de {client}\n").as_bytes()).await.is_err() {
+            return;
+        }
+        let _ = wr.flush().await;
+    }
+}
+
+/// Client TLS qui passe par le port public du relais, avec l'en-tête PROXY de `source`.
+pub async fn tls_client(
+    public: SocketAddr,
+    source: SocketAddr,
+    host: &str,
+    config: Arc<rustls::ClientConfig>,
+) -> std::io::Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    let mut tcp = TcpStream::connect(public).await?;
+    tcp.write_all(&crate::proxy_protocol::encode_v2(source, public)).await?;
+    let name = rustls::pki_types::ServerName::try_from(host.to_owned()).unwrap();
+    tokio_rustls::TlsConnector::from(config).connect(name, tcp).await
+}

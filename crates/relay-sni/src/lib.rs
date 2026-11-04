@@ -13,7 +13,12 @@
 pub mod client_hello;
 pub mod config;
 pub mod handshake;
+pub mod metrics;
 pub mod proxy_protocol;
+pub mod public;
+pub mod registry;
+pub mod server;
+pub mod tunnel;
 pub mod wire;
 
 #[cfg(any(test, feature = "testkit"))]
