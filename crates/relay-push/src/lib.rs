@@ -4,4 +4,6 @@
 //! remet la notification à APNs ou FCM et rend un statut synchrone. Le contenu est chiffré de
 //! bout en bout entre la maison et le téléphone : le relais n'en lit rien, n'en garde rien.
 
+pub mod apns;
+pub mod delivery;
 pub mod quotas;
