@@ -2,8 +2,8 @@
 #
 # Secrets du dépôt :
 #   AGENDO_DEPLOY_KEY            clé SSH privée, déployée en lecture seule sur charlyhue/agendo
-#   DOKPLOY_WEBHOOK_RELAY_SNI    URL du webhook de déploiement de l'application relay-sni
-#   DOKPLOY_WEBHOOK_RELAY_PUSH   URL du webhook de déploiement de l'application relay-push
+#   DOKPLOY_WEBHOOK_RELAY_SNI    URL(s) du webhook de déploiement de relay-sni, une par serveur et par ligne
+#   DOKPLOY_WEBHOOK_RELAY_PUSH   URL(s) du webhook de déploiement de relay-push, une par serveur et par ligne
 name: ci
 
 on:
@@ -132,10 +132,15 @@ jobs:
           WEBHOOK_SNI: ${{ secrets.DOKPLOY_WEBHOOK_RELAY_SNI }}
           WEBHOOK_PUSH: ${{ secrets.DOKPLOY_WEBHOOK_RELAY_PUSH }}
         run: |
-          if [ "${{ matrix.image }}" = relay-sni ]; then url="$WEBHOOK_SNI"; else url="$WEBHOOK_PUSH"; fi
-          if [ -z "$url" ]; then
+          # Une URL de webhook par ligne : une par serveur (relay-1, relay-2…).
+          if [ "${{ matrix.image }}" = relay-sni ]; then urls="$WEBHOOK_SNI"; else urls="$WEBHOOK_PUSH"; fi
+          count=0
+          for url in $urls; do
+            curl --fail --silent --show-error --max-time 30 -X POST "$url" > /dev/null
+            count=$((count + 1))
+          done
+          if [ "$count" -eq 0 ]; then
             echo "::warning::webhook Dokploy de ${{ matrix.image }} non configuré, déploiement sauté"
-            exit 0
+          else
+            echo "déploiement de ${{ matrix.image }} demandé à Dokploy ($count serveur(s))"
           fi
-          curl --fail --silent --show-error --max-time 30 -X POST "$url" > /dev/null
-          echo "déploiement de ${{ matrix.image }} demandé à Dokploy"

@@ -4,13 +4,28 @@ Deux applications Dokploy, une par image, et un fichier de configuration dynamiq
 Traefik. Rien n'est propre au déploiement dans le code : tout passe par les variables
 ci-dessous.
 
-Le domaine du service n'est pas encore choisi (**[à trancher]**). Ce guide écrit :
+Les domaines sont choisis, **temporairement** (trois maisons tenues par la personne) ; ils
+changeront. Le code n'en contient aucun : ils n'apparaissent que dans les variables
+d'environnement, la configuration de Traefik et le DNS. Changer de domaine, c'est changer ces
+trois endroits (et la configuration du plan de contrôle), sans nouvelle image.
 
-| Nom | Exemple | Rôle |
+| Rôle | Nom | Remarque |
 |---|---|---|
-| `ZONE_MAISONS` | `maisons.exemple.fr` | zone des maisons ; enregistrement `*.ZONE_MAISONS` vers le VPS |
-| `relais.DOMAINE` | `relais.exemple.fr` | entrée des tunnels des maisons |
-| `push.DOMAINE` | `push.exemple.fr` | relais push |
+| zone des maisons (`ZONE_MAISONS`) | `<id>.agendo.charly-hue.fr` | joker `*.agendo.charly-hue.fr` : une adresse A/AAAA **par relais** |
+| tunnels des maisons, un nom par instance | `agendo-relay-1.charly-hue.fr`, `agendo-relay-2.charly-hue.fr`… | TLS terminé par Traefik, puis `relay-sni:9443` |
+| relais push, un nom par instance | `agendo-push-1.charly-hue.fr`, `agendo-push-2.charly-hue.fr`… | HTTP derrière Traefik, puis `relay-push:8080` |
+
+En V1, seules les instances `-1` existent. Les noms des tunnels et du push ne sont jamais
+partagés entre plusieurs IP : Traefik obtient leurs certificats par le défi HTTP-01, et
+Let's Encrypt pourrait poser la question au mauvais serveur, qui n'a pas le jeton du défi.
+Le joker des maisons, lui, peut pointer sur plusieurs serveurs, puisque Traefik n'en délivre
+aucun certificat (passthrough).
+
+Avec ce domaine temporaire, les maisons partagent le domaine enregistré `charly-hue.fr` avec
+les autres sites de la personne. Deux conséquences : la limite de Let's Encrypt (50
+certificats par semaine pour `charly-hue.fr`) est commune, sans gêne pour trois maisons ; et
+l'inscription à la Public Suffix List, qui isolerait les cookies des maisons, n'a pas de sens
+sur un domaine provisoire. Elle reste à faire sur le domaine définitif.
 
 ## Ce qui a été vérifié
 
@@ -21,10 +36,10 @@ Le domaine du service n'est pas encore choisi (**[à trancher]**). Ce guide écr
   `:80`). La configuration dynamique est lue dans `/etc/dokploy/traefik/dynamic/`
   (surveillée : pas de redémarrage nécessaire).
 - **`HostSNIRegexp`** : en v3, c'est une expression régulière Go
-  (``HostSNIRegexp(`^[a-z2-7]{16}\.maisons\.exemple\.fr$`)``), sans les gabarits `{nom}` de
-  la v2. `HostSNI` accepte aussi un joker d'un niveau (``HostSNI(`*.maisons.exemple.fr`)``).
-  On garde l'expression stricte : Traefik écarte déjà tout nom qui ne peut pas être une
-  maison (16 caractères base32).
+  (``HostSNIRegexp(`^[a-z0-9]+\.agendo\.charly-hue\.fr$`)``), sans les gabarits `{nom}` de
+  la v2. `HostSNI` accepte aussi un joker d'un niveau (``HostSNI(`*.agendo.charly-hue.fr`)``).
+  L'expression n'admet qu'une étiquette de minuscules et de chiffres devant la zone ; le
+  relais refuse ensuite tout nom qu'aucune maison connectée ne sert.
 - **`proxyProtocol`** : depuis Traefik v3.5.2, il se règle dans un
   `tcp.serversTransports.<nom>` que le service désigne par `serversTransport`. L'ancienne
   forme, `loadBalancer.proxyProtocol`, est dépréciée.
@@ -39,15 +54,43 @@ Le domaine du service n'est pas encore choisi (**[à trancher]**). Ce guide écr
 
 ## DNS
 
-| Enregistrement | Vers |
-|---|---|
-| `*.ZONE_MAISONS` (A, AAAA) | IP du VPS |
-| `relais.DOMAINE` (A, AAAA) | IP du VPS |
-| `push.DOMAINE` (A, AAAA) | IP du VPS |
+V1, un seul serveur (IP `IP1`) :
 
-Le port 80 doit rester ouvert : Let's Encrypt valide `relais.DOMAINE` et `push.DOMAINE` en
+| Enregistrement | Type | Valeur | TTL |
+|---|---|---|---|
+| `*.agendo.charly-hue.fr` | A (et AAAA si le VPS a de l'IPv6) | `IP1` | **60 s** |
+| `agendo-relay-1.charly-hue.fr` | A, AAAA | `IP1` | défaut |
+| `agendo-push-1.charly-hue.fr` | A, AAAA | `IP1` | défaut |
+
+Le port 80 doit rester ouvert : Let's Encrypt valide `agendo-relay-1` et `agendo-push-1` en
 HTTP-01. Les certificats des maisons ne passent pas par Traefik : chaque maison obtient le sien
-en DNS-01, par le plan de contrôle, et sa clé reste chez elle.
+en DNS-01 (`_acme-challenge.<id>.agendo.charly-hue.fr`, posé par le plan de contrôle), et sa
+clé reste chez elle. Le fournisseur DNS de `charly-hue.fr` doit donc être celui que pilote le
+plan de contrôle.
+
+### Plusieurs relais : une adresse par relais dans le joker
+
+Chaque maison ouvre un tunnel vers **chacun** des relais que lui annonce le plan de contrôle
+(`relays: ["tls://agendo-relay-1.charly-hue.fr", "tls://agendo-relay-2.charly-hue.fr"]`).
+Toutes les maisons sont donc joignables par tous les relais, et le joker
+`*.agendo.charly-hue.fr` porte une adresse A/AAAA par relais : un navigateur qui arrive sur
+n'importe laquelle trouve la maison.
+
+### Panne d'un relais : retirer son IP
+
+1. Retirer l'adresse du serveur en panne (A et AAAA) de `*.agendo.charly-hue.fr`. Ne pas
+   toucher à `agendo-relay-N` ni à `agendo-push-N`.
+2. Avec un TTL de 60 s, les résolveurs oublient l'adresse en une minute environ. Certains
+   navigateurs et résolveurs gardent une réponse un peu plus longtemps : prévoir quelques
+   minutes. Un navigateur qui a reçu les deux adresses essaie souvent l'autre de lui-même
+   quand la connexion échoue.
+3. Les maisons n'ont rien à faire : leur tunnel vers le relais en panne se reconnecte en boucle
+   (recul exponentiel), celui vers l'autre relais continue.
+4. Au retour du serveur, vérifier que des tunnels y sont rouverts (log `tunnel ouvert`, métrique
+   `relay_sni_tunnels`), **puis seulement** remettre son adresse dans le joker.
+
+Le TTL de 60 s ne concerne que le joker : c'est le seul enregistrement qu'on modifie en cas de
+panne.
 
 ## Images
 
@@ -65,10 +108,11 @@ Tant que les images sont privées, déclarer le registre dans Dokploy (**Setting
 ## Application `relay-sni`
 
 - **Source** : Docker, image `ghcr.io/charlyhue/agendo-relay-sni:main`.
-- **Réplicas : 1, impérativement.** Une maison est connectée à une seule instance. Avec deux
-  réplicas derrière le même Traefik, un client pourrait arriver sur l'instance qui ne la
-  connaît pas. Plusieurs relais, ce sont plusieurs VPS annoncés aux maisons par le plan de
-  contrôle, pas des réplicas.
+- **Réplicas : 1, impérativement.** Le tunnel d'une maison arrive sur une seule instance. Avec
+  deux réplicas derrière le même Traefik, un client pourrait arriver sur l'instance qui ne la
+  connaît pas. Plusieurs relais, ce sont plusieurs serveurs, chacun avec son nom
+  `agendo-relay-N` annoncé aux maisons par le plan de contrôle (voir « Deuxième serveur »),
+  pas des réplicas.
 - **Domaines** : aucun dans l'interface. Le routage TCP passe par le fichier dynamique
   ci-dessous.
 - **Ports** : aucun port publié. Traefik joint le conteneur par le réseau `dokploy-network`.
@@ -83,7 +127,7 @@ Variables d'environnement :
 
 | Variable | Valeur | Remarque |
 |---|---|---|
-| `RELAY_SNI_ZONE` | `maisons.exemple.fr` | `ZONE_MAISONS` |
+| `RELAY_SNI_ZONE` | `agendo.charly-hue.fr` | `ZONE_MAISONS` : seuls les jetons d'un hôte de cette zone sont admis |
 | `RELAY_TRUSTED_KEYS` | `k1=<clé publique>` | clés publiques du plan de contrôle (`GET /.well-known/agendo-access/keys`), plusieurs pour une rotation : `k1=…,k2=…` |
 | `RELAY_SNI_PROXY_FROM` | sous-réseau de `dokploy-network` | `docker network inspect dokploy-network -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}'`. Seul Traefik doit pouvoir envoyer l'en-tête PROXY. |
 | `RELAY_METRICS_ADDR` | `0.0.0.0:9100` | si un collecteur lit les métriques depuis le réseau Docker ; défaut `127.0.0.1:9100` |
@@ -110,8 +154,10 @@ défaut). Le pire cas vaut à peu près `RELAY_SNI_MAX_CONNECTIONS × 2 × fenê
 ## Application `relay-push`
 
 - **Source** : Docker, image `ghcr.io/charlyhue/agendo-relay-push:main`.
-- **Domaine** (interface Dokploy) : `push.DOMAINE`, port du conteneur `8080`, HTTPS,
-  certificat `letsencrypt`. C'est un routeur HTTP ordinaire.
+- **Domaine** (interface Dokploy) : `agendo-push-1.charly-hue.fr`, chemin `/`, port du
+  conteneur `8080`, HTTPS, certificat `letsencrypt`. C'est un routeur HTTP ordinaire. Le plan
+  de contrôle l'annonce aux maisons par son URL de base
+  (`push_urls: ["https://agendo-push-1.charly-hue.fr"]`).
 - **Réplicas** : 1 suffit. Avec plusieurs, les quotas (en mémoire, par instance) deviennent
   plus larges d'autant.
 - **Montages** (*Advanced → Mounts → File Mount*), contenus collés dans Dokploy, jamais dans
@@ -147,10 +193,10 @@ Codes rendus par `POST /v1/push` : `200` (`sent`, `unregistered`), `400`/`401`/`
 
 ## Configuration dynamique de Traefik
 
-Fichier `/etc/dokploy/traefik/dynamic/agendo-relais.yml` (*Traefik → File System* dans
-Dokploy, ou sur l'hôte). Remplacer les domaines et le nom du service (`appName` de
-l'application `relay-sni`). Les expressions sont entre apostrophes YAML : les `\` n'ont pas à
-être doublés.
+Fichier `/etc/dokploy/traefik/dynamic/agendo-relais.yml` du serveur 1 (*Traefik → File
+System* dans Dokploy, ou sur l'hôte). Reporter le nom du service (`appName` de l'application
+`relay-sni`, ici `agendo-relay-sni-a1b2c3`). Les expressions sont entre apostrophes YAML :
+les `\` n'ont pas à être doublés.
 
 ```yaml
 tcp:
@@ -158,14 +204,14 @@ tcp:
     # Navigateurs et app vers une maison : TLS jamais déchiffré.
     agendo-maisons:
       entryPoints: [websecure]
-      rule: 'HostSNIRegexp(`^[a-z2-7]{16}\.maisons\.exemple\.fr$`)'
+      rule: 'HostSNIRegexp(`^[a-z0-9]+\.agendo\.charly-hue\.fr$`)'
       tls:
         passthrough: true
       service: agendo-relay-sni-public
-    # Tunnels des maisons : TLS terminé par Traefik.
+    # Tunnels des maisons : TLS terminé par Traefik. Nom propre à ce serveur (-1, -2…).
     agendo-tunnels:
       entryPoints: [websecure]
-      rule: 'HostSNI(`relais.exemple.fr`)'
+      rule: 'HostSNI(`agendo-relay-1.charly-hue.fr`)'
       tls:
         certResolver: letsencrypt
       service: agendo-relay-sni-tunnels
@@ -195,17 +241,50 @@ relais ne verrait que l'IP de Traefik, et la limite de tunnels par IP ne limiter
 Vérifications après déploiement :
 
 ```sh
-# Le certificat de relais.DOMAINE est servi par Traefik.
-openssl s_client -connect relais.exemple.fr:443 -servername relais.exemple.fr </dev/null | head -5
+# Le certificat d'agendo-relay-1 est servi par Traefik.
+openssl s_client -connect agendo-relay-1.charly-hue.fr:443 -servername agendo-relay-1.charly-hue.fr </dev/null | head -5
 # Un nom de maison inconnu : connexion fermée par le relais, sans réponse TLS.
-openssl s_client -connect abcdefghijklmnop.maisons.exemple.fr:443 -servername abcdefghijklmnop.maisons.exemple.fr </dev/null
+openssl s_client -connect inconnue.agendo.charly-hue.fr:443 -servername inconnue.agendo.charly-hue.fr </dev/null
 # Relais push : refus explicite sans jeton.
-curl -s -X POST https://push.exemple.fr/v1/push   # {"status":"rejected","detail":"jeton push absent"}
+curl -s -X POST https://agendo-push-1.charly-hue.fr/v1/push   # {"status":"rejected","detail":"jeton push absent"}
 ```
 
 Dans les logs du relais SNI (`relais SNI à l'écoute`, puis `tunnel ouvert` pour chaque maison),
 une ligne `connexion publique d'un pair non autorisé` signale un `RELAY_SNI_PROXY_FROM` qui ne
 couvre pas l'adresse de Traefik.
+
+## Deuxième serveur
+
+Un relais de plus, c'est un deuxième VPS piloté par la même instance de Dokploy (**serveur
+distant**), avec les mêmes applications et la même configuration. Seuls changent les noms
+`-2`, l'IP et le sous-réseau Docker.
+
+1. **Serveur distant** : dans Dokploy, *Remote Servers → Create Server* (IP, utilisateur, clé
+   SSH), puis **Setup Server**. Dokploy y installe Docker, le réseau `dokploy-network` et son
+   propre Traefik (même version, même entrée `websecure`, même résolveur `letsencrypt`).
+2. **DNS**, dans cet ordre :
+   - `agendo-relay-2.charly-hue.fr` et `agendo-push-2.charly-hue.fr` (A/AAAA) vers `IP2` ;
+   - **pas encore** `IP2` dans le joker `*.agendo.charly-hue.fr`.
+3. **Applications** : créer `relay-sni` et `relay-push` en choisissant le serveur 2 à la
+   création, avec la même image, les mêmes variables et les mêmes montages (clé `.p8`, compte
+   FCM). Seule différence : `RELAY_SNI_PROXY_FROM` prend le sous-réseau de `dokploy-network`
+   **du serveur 2** (même commande `docker network inspect`, lancée sur ce serveur). Domaine
+   du push : `agendo-push-2.charly-hue.fr`.
+4. **Traefik du serveur 2** : le même fichier `agendo-relais.yml`, avec
+   ``HostSNI(`agendo-relay-2.charly-hue.fr`)`` pour les tunnels et l'`appName` des
+   applications du serveur 2. Le routeur des maisons ne change pas.
+5. **Plan de contrôle** : ajouter `tls://agendo-relay-2.charly-hue.fr` à la liste des relais et
+   `https://agendo-push-2.charly-hue.fr` à celle des relais push. Les maisons la reçoivent au
+   renouvellement suivant de leurs jetons (6 h au plus) et ouvrent un second tunnel.
+6. **Vérifier** sur le serveur 2 que les tunnels arrivent (`relay_sni_tunnels` égal au nombre
+   de maisons rattachées), **puis** ajouter `IP2` au joker `*.agendo.charly-hue.fr`. Avant
+   cela, un navigateur envoyé vers `IP2` n'y trouverait aucune maison.
+7. **CI** : ajouter l'URL du webhook de chaque nouvelle application, sur une nouvelle ligne,
+   dans le secret existant (`DOKPLOY_WEBHOOK_RELAY_SNI`, `DOKPLOY_WEBHOOK_RELAY_PUSH`). La CI
+   appelle chaque ligne.
+
+Les quotas du relais push sont tenus par instance : avec deux relais push, une maison peut
+envoyer jusqu'à deux fois son quota si elle répartit ses envois.
 
 ## Métriques
 
@@ -227,7 +306,7 @@ de passe, pour pouvoir les remonter.
 ## Mode autonome
 
 Pour un relais sur un VPS sans Traefik : `RELAY_SNI_PROXY_PROTOCOL=off`, port public publié
-sur `443`. La terminaison TLS de `relais.DOMAINE` sur le port des tunnels n'est **pas**
+sur `443`. La terminaison TLS de `agendo-relay-N` sur le port des tunnels n'est **pas**
 implémentée en V1 (prévu par la spec, non requis) : il faut encore un proxy TLS devant
 `9443`.
 
@@ -252,8 +331,9 @@ Mise en place, une fois :
    secret `AGENDO_DEPLOY_KEY` = contenu de `agendo-deploy` (la clé privée).
 5. Supprimer les deux fichiers locaux.
 6. Même endroit : `DOKPLOY_WEBHOOK_RELAY_SNI` et `DOKPLOY_WEBHOOK_RELAY_PUSH`, URL du webhook
-   de chaque application (*Deployments → Webhook URL*, déploiement automatique activé). Sans
-   eux, la CI pousse les images et saute le déploiement.
+   de chaque application (*Deployments → Webhook URL*, déploiement automatique activé). Avec
+   plusieurs serveurs, une URL par ligne. Sans ces secrets, la CI pousse les images et saute
+   le déploiement.
 
 Plus tard, quand le protocole aura une étiquette sur GitHub, remplacer dans `Cargo.toml` (et
 `fuzz/Cargo.toml`) la dépendance par
