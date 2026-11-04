@@ -1,13 +1,28 @@
 [package]
 name = "relay-sni"
+description = "Relais SNI d'Agendo Access : passe les connexions TLS aux maisons, sans les déchiffrer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 rust-version.workspace = true
 
+[[bin]]
+name = "relay-sni"
+path = "src/main.rs"
+
 [dependencies]
+agendo-access-protocol.workspace = true
+bytes.workspace = true
 relay-common.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
 [lints]
 workspace = true
