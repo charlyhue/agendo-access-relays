@@ -527,6 +527,7 @@ dependencies = [
  "bytes",
  "rcgen",
  "relay-common",
+ "relay-sni",
  "rustls",
  "thiserror",
  "tokio",

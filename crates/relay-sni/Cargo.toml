@@ -11,6 +11,10 @@ rust-version.workspace = true
 name = "relay-sni"
 path = "src/main.rs"
 
+[features]
+# Outillage de test (clés fixes, fausse maison), pour les tests d'intégration.
+testkit = []
+
 [dependencies]
 agendo-access-protocol.workspace = true
 bytes.workspace = true
@@ -20,6 +24,7 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+relay-sni = { path = ".", features = ["testkit"] }
 rcgen = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

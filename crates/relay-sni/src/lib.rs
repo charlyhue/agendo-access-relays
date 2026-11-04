@@ -11,4 +11,10 @@
 //! Le relais ne détient aucun secret et n'ouvre aucune connexion sortante.
 
 pub mod client_hello;
+pub mod config;
+pub mod handshake;
 pub mod proxy_protocol;
+pub mod wire;
+
+#[cfg(any(test, feature = "testkit"))]
+pub mod testkit;

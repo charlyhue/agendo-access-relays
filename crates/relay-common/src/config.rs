@@ -44,6 +44,11 @@ impl Env {
         self.vars.get(name).map(|v| v.trim()).filter(|v| !v.is_empty())
     }
 
+    /// La variable est-elle posée (même vide) ?
+    pub fn vars_contains(&self, name: &str) -> bool {
+        self.vars.contains_key(name)
+    }
+
     /// Valeur obligatoire.
     pub fn required(&self, name: &str) -> Result<String, ConfigError> {
         self.get(name).map(str::to_owned).ok_or_else(|| ConfigError::Missing(name.to_owned()))
