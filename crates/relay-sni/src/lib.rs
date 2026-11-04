@@ -10,4 +10,5 @@
 //!
 //! Le relais ne détient aucun secret et n'ouvre aucune connexion sortante.
 
+pub mod client_hello;
 pub mod proxy_protocol;
