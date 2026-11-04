@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# Cibles cargo-fuzz : crate à part, compilé en nightly.
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# Licence à choisir avant l'ouverture du dépôt (point listé dans la PR).
+license = "UNLICENSED"
+publish = false
+rust-version = "1.90"
+repository = "https://github.com/charlyhue/agendo-access-relays"
+
+[workspace.dependencies]
+# Protocole commun d'Agendo Access (dépôt du socle). En CI, l'URL locale est réécrite vers
+# GitHub (voir docs/deploy-dokploy.md, « Dépendance vers le socle »).
+agendo-access-protocol = { git = "file:///Users/chue/workspace/agendo", branch = "agendo-access", features = ["codec"] }
+relay-common = { path = "crates/relay-common" }
+
+bytes = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "env-filter", "std"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+indexing_slicing = "warn"
+panic = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
