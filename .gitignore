@@ -1,0 +1,23 @@
+# Compilation
+/target/
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/coverage/
+
+# Sources vendues pour l'image Docker (générées par scripts/vendor.sh)
+/vendor/
+/docker/cargo-vendor.toml
+
+# Secrets : jamais dans Git
+.env
+.env.*
+*.p8
+*.pem
+*.key
+service-account*.json
+
+# Éditeurs et système
+.DS_Store
+.idea/
+.vscode/
