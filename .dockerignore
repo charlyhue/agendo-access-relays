@@ -1,0 +1,7 @@
+# Tout ce qui ne sert pas au build (et la cache de compilation). Les sources vendues gardent
+# tous leurs fichiers : `cargo vendor` en vérifie les sommes de contrôle.
+.git
+.github
+target
+fuzz
+docs

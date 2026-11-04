@@ -29,9 +29,23 @@ le crate `agendo-access-protocol` du socle Agendo. Ce dépôt l'utilise sans le 
 ## Développement
 
 ```sh
-cargo test --workspace
+cargo test --workspace                                 # avec une fausse maison, un faux APNs et un faux FCM
 cargo clippy --workspace --all-targets -- -D warnings
+cargo deny check && cargo audit                        # licences, sources, avis de sécurité
+(cd fuzz && cargo +nightly fuzz run client_hello)      # aussi : proxy_protocol, frames, push_request
 ```
+
+Images (binaires statiques musl, image `scratch`) :
+
+```sh
+scripts/vendor.sh                                      # sources vendues : build hors ligne
+docker build --target relay-sni  -t agendo-relay-sni  .
+docker build --target relay-push -t agendo-relay-push .
+```
+
+La CI (`.github/workflows/ci.yml`) teste, analyse, fait tourner le fuzzing, puis, sur `main`,
+pousse `ghcr.io/charlyhue/agendo-relay-sni` et `ghcr.io/charlyhue/agendo-relay-push` étiquetées
+par SHA et appelle les webhooks de Dokploy.
 
 La configuration passe uniquement par des variables d'environnement, décrites dans
 [docs/deploy-dokploy.md](docs/deploy-dokploy.md). Rien de propre à un déploiement (domaine,

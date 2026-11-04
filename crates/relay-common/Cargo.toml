@@ -1,0 +1,18 @@
+[package]
+name = "relay-common"
+description = "Commun aux relais d'Agendo Access : configuration, logs, métriques, limites, arrêt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+agendo-access-protocol.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,47 @@
+# Politique des dépendances (cargo-deny). Vérifiée en CI.
+
+[graph]
+all-features = true
+
+[advisories]
+# Tout avis de sécurité fait échouer, ainsi que les crates retirées ou abandonnées.
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Licences permissives, compatibles avec une ouverture du dépôt.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+# Nos crates (publish = false) n'ont pas encore de licence : le choix est à faire avant
+# l'ouverture du dépôt.
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Le protocole commun vient du dépôt du socle (URL locale en développement, réécrite vers
+# GitHub en CI : voir docs/deploy-dokploy.md).
+allow-git = [
+    "file:///Users/chue/workspace/agendo",
+    "ssh://git@github.com/charlyhue/agendo.git",
+]

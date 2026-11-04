@@ -1,0 +1,146 @@
+# Tests, analyse, fuzzing, puis images GHCR et déploiement Dokploy (branche main).
+#
+# Secrets du dépôt :
+#   AGENDO_DEPLOY_KEY            clé SSH privée, déployée en lecture seule sur charlyhue/agendo
+#   DOKPLOY_WEBHOOK_RELAY_SNI    URL(s) du webhook de déploiement de relay-sni, une par serveur et par ligne
+#   DOKPLOY_WEBHOOK_RELAY_PUSH   URL(s) du webhook de déploiement de relay-push, une par serveur et par ligne
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Cargo passe par git (et donc par l'agent SSH) pour la dépendance vers le socle.
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  verifier:
+    name: tests et clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.AGENDO_DEPLOY_KEY }}
+      - run: scripts/ci-agendo-github.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  dependances:
+    name: cargo-deny et cargo-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.AGENDO_DEPLOY_KEY }}
+      - run: scripts/ci-agendo-github.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-audit
+      - run: cargo deny --locked check
+      - run: cargo audit
+      - run: cargo audit --file fuzz/Cargo.lock
+
+  fuzz:
+    name: fuzzing (60 s par cible)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.AGENDO_DEPLOY_KEY }}
+      - run: scripts/ci-agendo-github.sh
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: cibles
+        working-directory: fuzz
+        run: |
+          for target in $(cargo +nightly fuzz list); do
+            echo "::group::$target"
+            cargo +nightly fuzz run "$target" -- -max_total_time=60 -max_len=20000
+            echo "::endgroup::"
+          done
+      - name: cas trouvés
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+
+  images:
+    name: images GHCR et déploiement
+    needs: [verifier, dependances, fuzz]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        image: [relay-sni, relay-push]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.AGENDO_DEPLOY_KEY }}
+      - run: scripts/ci-agendo-github.sh
+      - uses: dtolnay/rust-toolchain@stable
+      # Sources vendues : le build Docker se fait hors ligne, sans clé dans l'image.
+      - run: scripts/vendor.sh
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.image }}
+          platforms: linux/amd64
+          push: true
+          # :<sha> pour la traçabilité et le retour arrière ; :main, suivie par Dokploy.
+          tags: |
+            ghcr.io/charlyhue/agendo-${{ matrix.image }}:${{ github.sha }}
+            ghcr.io/charlyhue/agendo-${{ matrix.image }}:main
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+      - name: déploiement Dokploy
+        env:
+          WEBHOOK_SNI: ${{ secrets.DOKPLOY_WEBHOOK_RELAY_SNI }}
+          WEBHOOK_PUSH: ${{ secrets.DOKPLOY_WEBHOOK_RELAY_PUSH }}
+        run: |
+          # Une URL de webhook par ligne : une par serveur (relay-1, relay-2…).
+          if [ "${{ matrix.image }}" = relay-sni ]; then urls="$WEBHOOK_SNI"; else urls="$WEBHOOK_PUSH"; fi
+          count=0
+          for url in $urls; do
+            curl --fail --silent --show-error --max-time 30 -X POST "$url" > /dev/null
+            count=$((count + 1))
+          done
+          if [ "$count" -eq 0 ]; then
+            echo "::warning::webhook Dokploy de ${{ matrix.image }} non configuré, déploiement sauté"
+          else
+            echo "déploiement de ${{ matrix.image }} demandé à Dokploy ($count serveur(s))"
+          fi

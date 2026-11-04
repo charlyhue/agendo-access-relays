@@ -1,0 +1,33 @@
+[package]
+name = "relay-push"
+description = "Relais push d'Agendo Access : remet à APNs et FCM des notifications chiffrées de bout en bout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "relay-push"
+path = "src/main.rs"
+
+[dependencies]
+agendo-access-protocol.workspace = true
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+base64 = "0.22"
+p256 = { version = "0.14", default-features = false, features = ["ecdsa", "pkcs8", "pem", "std"] }
+relay-common.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "http2", "json"] }
+ring = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+axum = { version = "0.8", default-features = false, features = ["http1", "http2", "tokio", "json", "form"] }
+
+[lints]
+workspace = true
