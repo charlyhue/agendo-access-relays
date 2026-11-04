@@ -96,11 +96,12 @@ pub fn message(request: &PushRequest) -> Value {
 /// Code d'erreur FCM (`details[].errorCode`, sinon `error.status`), réduit à des caractères sûrs.
 fn error_code(body: &[u8]) -> String {
     let v: Value = serde_json::from_slice(body).unwrap_or_default();
-    let error = &v["error"];
-    let code = error["details"]
-        .as_array()
-        .and_then(|d| d.iter().find_map(|d| d["errorCode"].as_str()))
-        .or_else(|| error["status"].as_str())
+    let error = v.get("error");
+    let code = error
+        .and_then(|e| e.get("details"))
+        .and_then(Value::as_array)
+        .and_then(|d| d.iter().find_map(|d| d.get("errorCode").and_then(Value::as_str)))
+        .or_else(|| error.and_then(|e| e.get("status")).and_then(Value::as_str))
         .unwrap_or("inconnue");
     code.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(64).collect()
 }
@@ -249,7 +250,7 @@ pub(crate) mod tests {
             level,
             collapse_id: Some("sonnette-entree".into()),
             key_id: "cle-1".into(),
-            ciphertext: "Y2hpZmZyZQ".into(),
+            ciphertext: crate::apns::tests::ciphertext(),
         }
     }
 
@@ -319,7 +320,7 @@ pub(crate) mod tests {
             json!({
                 "message": {
                     "token": "fcm:jeton-du-telephone_123",
-                    "data": { FCM_KEY_ID: "cle-1", FCM_CIPHERTEXT: "Y2hpZmZyZQ" },
+                    "data": { FCM_KEY_ID: "cle-1", FCM_CIPHERTEXT: crate::apns::tests::ciphertext() },
                     "android": { "priority": "HIGH", "collapse_key": "sonnette-entree" },
                 }
             })

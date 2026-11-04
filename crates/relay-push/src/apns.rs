@@ -71,7 +71,7 @@ pub struct ApnsClient {
 
 /// Jeton de téléphone APNs : hexadécimal (64 caractères aujourd'hui, plus long permis).
 pub fn valid_device_token(token: &str) -> bool {
-    (16..=200).contains(&token.len()) && token.len() % 2 == 0 && token.bytes().all(|b| b.is_ascii_hexdigit())
+    (16..=200).contains(&token.len()) && token.len().is_multiple_of(2) && token.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Corps JSON envoyé à APNs.
@@ -194,6 +194,19 @@ pub(crate) mod tests {
         SigningKey::from_bytes(&[7u8; 32].into()).unwrap()
     }
 
+    /// Chiffré réel (nonce fixe) d'une notification de test.
+    pub(crate) fn ciphertext() -> String {
+        let clear = agendo_access_protocol::push::PushPlaintext {
+            title: "Sonnette".into(),
+            body: "Quelqu'un sonne".into(),
+            category: None,
+            thread: None,
+            data: Default::default(),
+            sent_at: 1_793_000_000,
+        };
+        agendo_access_protocol::push::seal_with_nonce(&[1; 32], "cle-1", &clear, [3; 24]).unwrap()
+    }
+
     pub(crate) fn request(level: PushLevel) -> PushRequest {
         PushRequest {
             device: "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90".into(),
@@ -201,7 +214,7 @@ pub(crate) mod tests {
             level,
             collapse_id: Some("sonnette-entree".into()),
             key_id: "cle-1".into(),
-            ciphertext: "Y2hpZmZyZQ".into(),
+            ciphertext: ciphertext(),
         }
     }
 
@@ -276,7 +289,7 @@ pub(crate) mod tests {
                     "interruption-level": "time-sensitive",
                     "sound": "default",
                 },
-                "agendo": { "key_id": "cle-1", "ciphertext": "Y2hpZmZyZQ" },
+                "agendo": { "key_id": "cle-1", "ciphertext": ciphertext() },
             })
         );
         assert_eq!(payload(&request(PushLevel::Critical))["aps"]["sound"], json!({ "critical": 1, "name": "default", "volume": 1.0 }));

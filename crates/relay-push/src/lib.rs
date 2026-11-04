@@ -5,6 +5,9 @@
 //! bout en bout entre la maison et le téléphone : le relais n'en lit rien, n'en garde rien.
 
 pub mod apns;
+pub mod app;
+pub mod config;
 pub mod delivery;
 pub mod fcm;
+pub mod metrics;
 pub mod quotas;
