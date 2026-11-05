@@ -7,5 +7,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 rm -rf vendor
+# `docker/` ne contient que des fichiers générés, ignorés par Git : absent d'un checkout neuf.
+mkdir -p docker
 cargo vendor --locked --versioned-dirs vendor > docker/cargo-vendor.toml
 echo "Sources vendues dans vendor/ ($(du -sh vendor | cut -f1)), configuration dans docker/cargo-vendor.toml" >&2
