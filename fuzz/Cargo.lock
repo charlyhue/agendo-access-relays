@@ -14,8 +14,8 @@ dependencies = [
 
 [[package]]
 name = "agendo-access-protocol"
-version = "0.41.0"
-source = "git+ssh://git@github.com/charlyhue/agendo.git?tag=v0.41.0#98e6dfd0de4f2f430f1d622cec3d518542998706"
+version = "0.42.0"
+source = "git+ssh://git@github.com/charlyhue/agendo.git?tag=v0.42.0#9d4937d1f875309bcc90acedcc436ac7d8bfe7f1"
 dependencies = [
  "base64",
  "bytes",
@@ -234,7 +234,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

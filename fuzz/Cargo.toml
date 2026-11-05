@@ -13,7 +13,7 @@ cargo-fuzz = true
 [workspace]
 
 [dependencies]
-agendo-access-protocol = { git = "ssh://git@github.com/charlyhue/agendo.git", tag = "v0.41.0" }
+agendo-access-protocol = { git = "ssh://git@github.com/charlyhue/agendo.git", tag = "v0.42.0" }
 libfuzzer-sys = "0.4"
 relay-common = { path = "../crates/relay-common" }
 relay-sni = { path = "../crates/relay-sni", features = ["testkit"] }

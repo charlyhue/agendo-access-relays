@@ -322,7 +322,7 @@ Le protocole commun vient du crate `agendo-access-protocol` du dépôt `charlyhu
 (privé), **à un tag** :
 
 ```toml
-agendo-access-protocol = { git = "ssh://git@github.com/charlyhue/agendo.git", tag = "v0.41.0", features = ["codec"] }
+agendo-access-protocol = { git = "ssh://git@github.com/charlyhue/agendo.git", tag = "v0.42.0", features = ["codec"] }
 ```
 
 (même ligne dans `fuzz/Cargo.toml`, sans `codec`). Le commit exact est figé dans `Cargo.lock`

@@ -17,7 +17,7 @@ repository = "https://github.com/charlyhue/agendo-access-relays"
 # Protocole commun d'Agendo Access, au tag du socle. Dépôt privé : accès SSH (clé de
 # l'agent en local, clé de déploiement en CI), Cargo passant par la CLI git
 # (`.cargo/config.toml`). Voir docs/deploy-dokploy.md, « Dépendance vers le socle ».
-agendo-access-protocol = { git = "ssh://git@github.com/charlyhue/agendo.git", tag = "v0.41.0", features = ["codec"] }
+agendo-access-protocol = { git = "ssh://git@github.com/charlyhue/agendo.git", tag = "v0.42.0", features = ["codec"] }
 relay-common = { path = "crates/relay-common" }
 
 bytes = "1"
