@@ -75,9 +75,12 @@ jobs:
       - name: cibles
         working-directory: fuzz
         run: |
+          # Le binaire cargo-fuzz précompilé vise par défaut sa propre cible (musl), incompatible
+          # avec ASan : on impose la cible de l'hôte (glibc).
+          host=$(rustc +nightly -vV | sed -n 's/^host: //p')
           for target in $(cargo +nightly fuzz list); do
             echo "::group::$target"
-            cargo +nightly fuzz run "$target" -- -max_total_time=60 -max_len=20000
+            cargo +nightly fuzz run --target "$host" "$target" -- -max_total_time=60 -max_len=20000
             echo "::endgroup::"
           done
       - name: cas trouvés
