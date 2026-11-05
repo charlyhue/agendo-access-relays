@@ -189,7 +189,12 @@ maison viennent de son jeton push, pas de la configuration.
 
 Codes rendus par `POST /v1/push` : `200` (`sent`, `unregistered`), `400`/`401`/`413`
 (`rejected` par le relais), `422` (`rejected` par APNs ou FCM), `429` (`quota`), `502`
-(APNs ou FCM indisponible), `503` (relais surchargé).
+(`unavailable` : APNs ou FCM en panne passagère, 5xx, 429 ou délai dépassé), `503`
+(`unavailable` : relais surchargé). Seul `unavailable` vaut un nouvel essai, plus tard ou
+auprès d'un autre `agendo-push-N` ; `rejected` et `quota` sont définitifs.
+
+L'en-tête `Agendo-Signature` nomme la maison (`house=<id>,t=…,sig=…`) : elle doit être celle
+du jeton push (`sub`), sinon `401`.
 
 ## Configuration dynamique de Traefik
 
@@ -291,7 +296,8 @@ envoyer jusqu'à deux fois son quota si elle répartit ses envois.
 Port interne `9100`, jamais routé par Traefik : `GET /metrics` (texte Prometheus) et
 `GET /sante` (`ok`). Séries : `relay_sni_tunnels`, `relay_sni_streams`,
 `relay_sni_handshakes_total{result}`, `relay_sni_public_connections_total{result}`,
-`relay_sni_bytes_total{direction}`, `relay_push_requests_total{status}`,
+`relay_sni_bytes_total{direction}`, `relay_sni_renewals_total{result}` (`RENEW` acceptés ou
+refusés), `relay_push_requests_total{status}` (dont `unavailable`),
 `relay_push_upstream_errors_total{platform}`. Aucune étiquette ne porte de nom d'hôte ni d'IP.
 
 L'image `scratch` n'a pas de shell : pas de `HEALTHCHECK` Docker. La politique de redémarrage
@@ -310,37 +316,42 @@ sur `443`. La terminaison TLS de `agendo-relay-N` sur le port des tunnels n'est 
 implémentée en V1 (prévu par la spec, non requis) : il faut encore un proxy TLS devant
 `9443`.
 
-## Dépendance vers le socle (CI)
+## Dépendance vers le socle
 
-Le protocole commun vient du crate `agendo-access-protocol` du dépôt `charlyhue/agendo`,
-privé. En développement, `Cargo.toml` pointe sur le dépôt local
-(`file:///Users/chue/workspace/agendo`, branche `agendo-access`). En CI,
-`scripts/ci-agendo-github.sh` réécrit cette URL en `ssh://git@github.com/charlyhue/agendo.git`,
-au même commit que les `Cargo.lock`. Cargo passe alors par `git` et l'agent SSH
-(`CARGO_NET_GIT_FETCH_WITH_CLI=true`).
+Le protocole commun vient du crate `agendo-access-protocol` du dépôt `charlyhue/agendo`
+(privé), **à un tag** :
 
-Mise en place, une fois :
+```toml
+agendo-access-protocol = { git = "ssh://git@github.com/charlyhue/agendo.git", tag = "v0.41.0", features = ["codec"] }
+```
 
-1. **Pousser la branche `agendo-access` du socle sur GitHub.** Elle n'existe aujourd'hui qu'en
-   local, et sans elle la CI ne trouve pas le commit figé dans `Cargo.lock`.
-2. Créer une paire de clés dédiée, sans phrase de passe (elle ne sert qu'à cela) :
+(même ligne dans `fuzz/Cargo.toml`, sans `codec`). Le commit exact est figé dans `Cargo.lock`
+et `fuzz/Cargo.lock`. `.cargo/config.toml` fait passer Cargo par la CLI git
+(`net.git-fetch-with-cli`), qui utilise l'agent SSH : en local la clé personnelle (accès au
+dépôt du socle), en CI la clé de déploiement chargée par `webfactory/ssh-agent`
+(`CARGO_NET_GIT_FETCH_WITH_CLI=true` y est aussi posé).
+
+**Monter de version** : changer le tag dans `Cargo.toml` et `fuzz/Cargo.toml`, puis
+`cargo update -p agendo-access-protocol` à la racine **et** dans `fuzz/`, puis la suite
+complète, clippy, `cargo deny check`, `cargo audit` (les deux lockfiles) et le fuzzing.
+
+Mise en place de la CI, une fois :
+
+1. Créer une paire de clés dédiée, sans phrase de passe (elle ne sert qu'à cela) :
    `ssh-keygen -t ed25519 -N "" -C "ci agendo-access-relays" -f agendo-deploy`.
-3. Dans `charlyhue/agendo`, **Settings → Deploy keys → Add deploy key** : contenu de
+2. Dans `charlyhue/agendo`, **Settings → Deploy keys → Add deploy key** : contenu de
    `agendo-deploy.pub`, **sans** l'accès en écriture.
-4. Dans `charlyhue/agendo-access-relays`, **Settings → Secrets and variables → Actions** :
+3. Dans `charlyhue/agendo-access-relays`, **Settings → Secrets and variables → Actions** :
    secret `AGENDO_DEPLOY_KEY` = contenu de `agendo-deploy` (la clé privée).
-5. Supprimer les deux fichiers locaux.
-6. Même endroit : `DOKPLOY_WEBHOOK_RELAY_SNI` et `DOKPLOY_WEBHOOK_RELAY_PUSH`, URL du webhook
+4. Supprimer les deux fichiers locaux.
+5. Même endroit : `DOKPLOY_WEBHOOK_RELAY_SNI` et `DOKPLOY_WEBHOOK_RELAY_PUSH`, URL du webhook
    de chaque application (*Deployments → Webhook URL*, déploiement automatique activé). Avec
    plusieurs serveurs, une URL par ligne. Sans ces secrets, la CI pousse les images et saute
    le déploiement.
 
-Plus tard, quand le protocole aura une étiquette sur GitHub, remplacer dans `Cargo.toml` (et
-`fuzz/Cargo.toml`) la dépendance par
-`git = "ssh://git@github.com/charlyhue/agendo.git", tag = "…"`, puis supprimer le script de
-réécriture. Le jour où le socle devient public, l'URL `https://` suffit et la clé de
-déploiement peut être révoquée.
+Le jour où le socle devient public, l'URL `https://github.com/charlyhue/agendo.git` suffit (plus
+de clé ni de CLI git), et la clé de déploiement peut être révoquée.
 
 L'image Docker se construit **hors ligne**, sur les sources vendues par `scripts/vendor.sh`
-(étape de la CI juste avant le build) : aucune clé n'entre dans l'image ni dans le contexte
-de build.
+(étape de la CI juste avant le build, avec l'agent SSH) : aucune clé n'entre dans l'image ni
+dans le contexte de build.

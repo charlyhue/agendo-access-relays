@@ -3,7 +3,7 @@
 Ce dépôt contient les deux relais d'Agendo Access (`relay-sni`, `relay-push`) et leur crate
 commun. La spécification de référence est
 `docs/superpowers/specs/2026-11-04-agendo-access-design.md` dans le dépôt du socle
-(`charlyhue/agendo`, branche `agendo-access`). Elle fait foi, surtout les sections « Relais »,
+(`charlyhue/agendo`, branche `main`). Elle fait foi, surtout les sections « Relais »,
 « Protocole commun », « Configuration Traefik » et « Sécurité ».
 
 **Le dépôt deviendra public.** Il s'écrit dès maintenant comme s'il l'était déjà.
@@ -14,7 +14,14 @@ commun. La spécification de référence est
   maison et un faux APNs/FCM, sans réseau extérieur).
 - `cargo clippy --workspace --all-targets -- -D warnings` : doit rester sans warning.
 - `cargo deny check` et `cargo audit` : licences, sources, avis de sécurité.
-- `cargo +nightly fuzz run <cible>` dans `fuzz/` : décodeurs exposés au réseau.
+- `cargo +nightly fuzz run <cible>` dans `fuzz/` : décodeurs exposés au réseau et session de
+  tunnel (`cargo +nightly fuzz list`).
+- Le protocole commun est une dépendance Git **au tag** du socle
+  (`ssh://git@github.com/charlyhue/agendo.git`, `tag = "v…"`), dans `Cargo.toml` et
+  `fuzz/Cargo.toml`. Accès par SSH, Cargo passant par la CLI git (`.cargo/config.toml`) : l'agent
+  SSH doit avoir une clé qui lit `charlyhue/agendo`. Monter de version : changer le tag aux deux
+  endroits, puis `cargo update -p agendo-access-protocol` à la racine **et** dans `fuzz/`.
+  Jamais de chemin local (`path`, `file://`) : le dépôt deviendra public.
 - Rust est installé via rustup : si `cargo` est introuvable, `. ~/.cargo/env`.
 
 ## Règles
