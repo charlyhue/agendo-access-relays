@@ -69,9 +69,11 @@ pub struct ApnsClient {
     token: Mutex<Option<(String, i64)>>,
 }
 
-/// Jeton de téléphone APNs : hexadécimal (64 caractères aujourd'hui, plus long permis).
+/// Jeton de téléphone APNs admis dans l'URL (`push::is_apns_token` du protocole : hexadécimal
+/// minuscule, longueur paire, 64 caractères au moins). `PushRequest::validate` l'a déjà vérifié ;
+/// le client le revérifie avant de l'écrire dans le chemin de la requête.
 pub fn valid_device_token(token: &str) -> bool {
-    (16..=200).contains(&token.len()) && token.len().is_multiple_of(2) && token.bytes().all(|b| b.is_ascii_hexdigit())
+    agendo_access_protocol::push::is_apns_token(token)
 }
 
 /// Corps JSON envoyé à APNs.
@@ -272,7 +274,8 @@ pub(crate) mod tests {
     #[test]
     fn device_token_must_be_hex() {
         assert!(valid_device_token(&request(PushLevel::Active).device));
-        for bad in ["", "abc", "../../3/device/x", "a1b2?x=1", "a1b2#", "A1B2zz", &"a".repeat(201)] {
+        let upper = request(PushLevel::Active).device.to_uppercase();
+        for bad in ["", "abc", "../../3/device/x", "a1b2?x=1", "a1b2#", "A1B2zz", &"a".repeat(201), &"ab".repeat(16), &upper] {
             assert!(!valid_device_token(bad), "{bad:?}");
         }
     }

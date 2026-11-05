@@ -1,0 +1,4 @@
+# Le protocole commun vient d'un dépôt GitHub privé, par SSH : Cargo passe par la CLI git, qui
+# utilise l'agent SSH (clé personnelle en local, clé de déploiement en CI).
+[net]
+git-fetch-with-cli = true

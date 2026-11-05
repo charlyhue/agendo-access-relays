@@ -14,9 +14,10 @@ rust-version = "1.90"
 repository = "https://github.com/charlyhue/agendo-access-relays"
 
 [workspace.dependencies]
-# Protocole commun d'Agendo Access (dépôt du socle). En CI, l'URL locale est réécrite vers
-# GitHub (voir docs/deploy-dokploy.md, « Dépendance vers le socle »).
-agendo-access-protocol = { git = "file:///Users/chue/workspace/agendo", branch = "agendo-access", features = ["codec"] }
+# Protocole commun d'Agendo Access, au tag du socle. Dépôt privé : accès SSH (clé de
+# l'agent en local, clé de déploiement en CI), Cargo passant par la CLI git
+# (`.cargo/config.toml`). Voir docs/deploy-dokploy.md, « Dépendance vers le socle ».
+agendo-access-protocol = { git = "ssh://git@github.com/charlyhue/agendo.git", tag = "v0.41.0", features = ["codec"] }
 relay-common = { path = "crates/relay-common" }
 
 bytes = "1"

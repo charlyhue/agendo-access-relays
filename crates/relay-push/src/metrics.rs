@@ -9,6 +9,7 @@ pub struct PushMetrics {
     pub unregistered: Counter,
     pub rejected: Counter,
     pub quota: Counter,
+    pub unavailable: Counter,
     pub upstream_ios: Counter,
     pub upstream_android: Counter,
 }
@@ -23,6 +24,7 @@ impl PushMetrics {
             unregistered: r.counter("relay_push_requests_total", requests, &[("status", "unregistered")]),
             rejected: r.counter("relay_push_requests_total", requests, &[("status", "rejected")]),
             quota: r.counter("relay_push_requests_total", requests, &[("status", "quota")]),
+            unavailable: r.counter("relay_push_requests_total", requests, &[("status", "unavailable")]),
             upstream_ios: r.counter("relay_push_upstream_errors_total", upstream, &[("platform", "ios")]),
             upstream_android: r.counter("relay_push_upstream_errors_total", upstream, &[("platform", "android")]),
             registry: r,
