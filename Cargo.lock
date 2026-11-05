@@ -14,8 +14,8 @@ dependencies = [
 
 [[package]]
 name = "agendo-access-protocol"
-version = "0.40.1"
-source = "git+file:///Users/chue/workspace/agendo?branch=agendo-access#d7528d6af066ff9f0c1c2c359c112c47a6b83ad3"
+version = "0.42.0"
+source = "git+ssh://git@github.com/charlyhue/agendo.git?tag=v0.42.0#9d4937d1f875309bcc90acedcc436ac7d8bfe7f1"
 dependencies = [
  "base64 0.22.1",
  "bytes",

@@ -14,7 +14,9 @@ Les relais ne gardent rien, sans base ni état durable : on peut les redémarrer
 reconnectent. Ils vérifient les jetons du plan de contrôle avec sa seule clé publique.
 
 Le protocole commun (trames du tunnel, jetons, signatures, format des notifications) vit dans
-le crate `agendo-access-protocol` du socle Agendo. Ce dépôt l'utilise sans le redéfinir.
+le crate `agendo-access-protocol` du socle Agendo, dont ce dépôt dépend à un tag (dépôt GitHub
+privé pour l'instant : il faut une clé SSH qui le lit, voir
+[docs/deploy-dokploy.md](docs/deploy-dokploy.md)). Ce dépôt l'utilise sans le redéfinir.
 
 ## Contenu
 
@@ -32,7 +34,7 @@ le crate `agendo-access-protocol` du socle Agendo. Ce dépôt l'utilise sans le 
 cargo test --workspace                                 # avec une fausse maison, un faux APNs et un faux FCM
 cargo clippy --workspace --all-targets -- -D warnings
 cargo deny check && cargo audit                        # licences, sources, avis de sécurité
-(cd fuzz && cargo +nightly fuzz run client_hello)      # aussi : proxy_protocol, frames, push_request
+(cd fuzz && cargo +nightly fuzz run client_hello)      # aussi : proxy_protocol, frames, push_request, tunnel_session
 ```
 
 Images (binaires statiques musl, image `scratch`) :

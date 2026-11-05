@@ -1,5 +1,9 @@
 //! Tunnel d'une maison, après `READY` : multiplexeur des flux, contrôle de flux par flux,
-//! ping, expiration du jeton, `GOAWAY`.
+//! ping, expiration et renouvellement du jeton (`RENEW` → `RENEWED`), `GOAWAY`.
+//!
+//! Pas de demi-fermeture : `CLOSE` ferme le flux dans les deux sens. Reçu de la maison, le relais
+//! livre au client les octets déjà reçus puis ferme la connexion, ignore la suite du flux et ne
+//! renvoie pas de `CLOSE`.
 //!
 //! Une tâche lit les trames de la maison et les répartit entre les flux ; une tâche écrit, seule
 //! propriétaire de la moitié écriture, les trames de la file `out` (bornée). Chaque flux est
@@ -14,14 +18,16 @@ use std::{
     net::{IpAddr, SocketAddr},
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicI64, AtomicU32, Ordering},
     },
     time::{Duration, Instant},
 };
 
 use agendo_access_protocol::{
     frame::{CloseCode, Frame, GoAwayCode, MAX_GOAWAY_MESSAGE, MAX_MISSED_PINGS, RecvWindow, SendWindow},
+    keys::TrustedKeys,
     token::TunnelClaims,
+    tunnel::verify_renew,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
@@ -61,6 +67,18 @@ struct TunnelShared {
     missed_pings: AtomicU32,
     end: Mutex<Option<String>>,
     metrics: SniMetrics,
+    /// Jeton en vigueur et défi de la session, pour les `RENEW`.
+    session: Mutex<Session>,
+    /// Expiration du jeton en vigueur (secondes Unix), avancée par un `RENEW` accepté.
+    expires_at: AtomicI64,
+    keys: TrustedKeys,
+    zone: String,
+}
+
+#[derive(Debug)]
+struct Session {
+    claims: TunnelClaims,
+    nonce: [u8; 32],
 }
 
 #[derive(Debug, Default)]
@@ -228,6 +246,7 @@ impl TunnelShared {
                 let _ = self.out.send(Frame::Pong { ts }).await;
             }
             Frame::Pong { .. } => self.missed_pings.store(0, Ordering::Relaxed),
+            Frame::Renew { token, signature } => return self.on_renew(&token, &signature).await,
             Frame::GoAway { code, .. } => return Err(format!("GOAWAY de la maison ({code:?})")),
             other => {
                 let reason = format!("trame {:?} inattendue de la maison", other.kind());
@@ -236,6 +255,34 @@ impl TunnelShared {
             }
         }
         Ok(())
+    }
+
+    /// `RENEW` : jeton neuf pour la même maison et le même hôte, signé avec le défi de la
+    /// session. Accepté, il remplace le jeton en vigueur et son expiration ; sinon `GOAWAY` 2.
+    async fn on_renew(&self, token: &str, signature: &[u8; 64]) -> Result<(), String> {
+        let now = relay_common::time::now_unix();
+        let verdict = {
+            let session = lock(&self.session);
+            verify_renew(token, signature, &session.nonce, &session.claims, &self.keys, &self.zone, now)
+        };
+        match verdict {
+            Ok(claims) => {
+                let expires_at = claims.exp;
+                self.expires_at.store(expires_at, Ordering::Relaxed);
+                lock(&self.session).claims = claims;
+                self.metrics.renewals_accepted.inc();
+                tracing::info!(maison = %self.house, hote = %self.host, expiration = expires_at, "jeton du tunnel renouvelé");
+                let expires_at = u64::try_from(expires_at).unwrap_or(0);
+                let _ = self.out.send(Frame::Renewed { expires_at }).await;
+                Ok(())
+            }
+            Err(error) => {
+                self.metrics.renewals_refused.inc();
+                let reason = format!("renouvellement refusé : {error}");
+                self.goaway(GoAwayCode::AuthFailed, &reason);
+                Err(reason)
+            }
+        }
     }
 
     async fn on_data(&self, id: u32, data: Vec<u8>) {
@@ -397,13 +444,17 @@ impl Drop for StreamHandle {
 pub struct TunnelSetup<'a> {
     pub id: u64,
     pub claims: TunnelClaims,
+    /// Défi de la session (`CHALLENGE`), qui signe aussi les `RENEW`.
+    pub nonce: [u8; 32],
+    pub keys: &'a TrustedKeys,
+    /// `ZONE_MAISONS`.
+    pub zone: &'a str,
     pub peer_ip: IpAddr,
     pub limits: &'a Limits,
     pub registry: &'a Registry,
     pub metrics: &'a SniMetrics,
     /// Annulé à l'arrêt du relais.
     pub shutdown: &'a CancellationToken,
-    pub now: i64,
 }
 
 /// Sert un tunnel jusqu'à sa fin. Inscrit la maison, remplace une connexion plus ancienne du
@@ -412,7 +463,7 @@ pub async fn serve<S>(io: S, reader: FrameReader, setup: TunnelSetup<'_>)
 where
     S: AsyncRead + AsyncWrite + Send + 'static,
 {
-    let TunnelSetup { id, claims, peer_ip, limits, registry, metrics, shutdown, now } = setup;
+    let TunnelSetup { id, claims, nonce, keys, zone, peer_ip, limits, registry, metrics, shutdown } = setup;
     let (out, out_rx) = mpsc::channel(OUT_QUEUE);
     let shared = Arc::new(TunnelShared {
         id,
@@ -426,6 +477,10 @@ where
         missed_pings: AtomicU32::new(0),
         end: Mutex::new(None),
         metrics: metrics.clone(),
+        expires_at: AtomicI64::new(claims.exp),
+        session: Mutex::new(Session { claims: claims.clone(), nonce }),
+        keys: keys.clone(),
+        zone: zone.to_owned(),
     });
     let handle = TunnelHandle { shared: shared.clone() };
     if let Some(old) = registry.register(handle) {
@@ -438,14 +493,10 @@ where
 
     let (mut rd, wr) = tokio::io::split(io);
     let writer = tokio::spawn(write_loop(wr, out_rx, shared.cancel.clone(), limits.write_timeout));
-    let expires_in = Duration::from_secs(u64::try_from(claims.exp.saturating_sub(now)).unwrap_or(0));
     let reason = tokio::select! {
         reason = read_loop(&mut rd, reader, &shared) => reason,
         reason = ping_loop(&shared, limits.ping_interval) => reason,
-        () = tokio::time::sleep(expires_in) => {
-            shared.goaway(GoAwayCode::TokenExpired, "jeton de tunnel expiré, en obtenir un neuf");
-            "jeton expiré".to_owned()
-        }
+        reason = expiry(&shared) => reason,
         () = shutdown.cancelled() => {
             shared.goaway(GoAwayCode::Shutdown, "arrêt du relais (redéploiement)");
             "arrêt du relais".to_owned()
@@ -487,6 +538,18 @@ async fn read_loop<R: AsyncRead + Unpin>(rd: &mut R, mut reader: FrameReader, sh
     }
 }
 
+/// Coupe le tunnel à l'expiration du jeton en vigueur ; un `RENEW` accepté la repousse.
+async fn expiry(shared: &TunnelShared) -> String {
+    loop {
+        let (expires_at, now) = (shared.expires_at.load(Ordering::Relaxed), relay_common::time::now_unix());
+        if now >= expires_at {
+            shared.goaway(GoAwayCode::TokenExpired, "jeton de tunnel expiré, en obtenir un neuf");
+            return "jeton expiré".to_owned();
+        }
+        tokio::time::sleep(Duration::from_secs(u64::try_from(expires_at - now).unwrap_or(0))).await;
+    }
+}
+
 async fn ping_loop(shared: &TunnelShared, interval: Duration) -> String {
     let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -496,7 +559,8 @@ async fn ping_loop(shared: &TunnelShared, interval: Duration) -> String {
             return format!("{MAX_MISSED_PINGS} pings sans réponse");
         }
         shared.missed_pings.fetch_add(1, Ordering::Relaxed);
-        let ts = u64::try_from(relay_common::time::now_unix()).unwrap_or(0);
+        // Millisecondes Unix sur l'horloge du relais, rendues telles quelles par le `PONG`.
+        let ts = relay_common::time::now_unix_millis();
         if shared.out.send(Frame::Ping { ts }).await.is_err() {
             return "file d'écriture fermée".into();
         }

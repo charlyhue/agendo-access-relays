@@ -340,8 +340,65 @@ async fn answered_pings_keep_the_tunnel() {
     h.handshake(HOST).await;
     for _ in 0..8 {
         let Some(Frame::Ping { ts }) = h.recv().await else { panic!("PING attendu") };
+        // Millisecondes Unix, sur l'horloge du relais.
+        let now_ms = u64::try_from(relay_common::time::now_unix()).unwrap() * 1000;
+        assert!(ts.abs_diff(now_ms) < 5_000, "horodatage en millisecondes attendu : {ts}");
         h.send(&Frame::Pong { ts }).await;
     }
+}
+
+#[tokio::test]
+async fn renew_extends_the_tunnel_past_the_old_expiry() {
+    let relay = start(config(|_| {})).await;
+    let mut h = house(&relay).await;
+    let short = testkit::tunnel_token(HOST, 2);
+    assert!(matches!(h.handshake_with(&short, &testkit::house_key()).await, Frame::Ready { .. }));
+    h.renew(&testkit::tunnel_token(HOST, 3600), &testkit::house_key()).await;
+    let Some(Frame::Renewed { expires_at }) = next_non_ping(&mut h).await else { panic!("RENEWED attendu") };
+    let expected = u64::try_from(relay_common::time::now_unix() + 3600).unwrap();
+    assert!(expires_at.abs_diff(expected) <= 2, "nouvelle expiration : {expires_at}");
+    // L'ancien jeton expire pendant ce temps : le tunnel tient.
+    let quiet = tokio::time::timeout(Duration::from_millis(3500), next_non_ping(&mut h)).await;
+    assert!(quiet.is_err(), "trame reçue après le renouvellement : {quiet:?}");
+    let _c = raw_client(&relay, CLIENT, &client_hello(HOST)).await;
+    assert!(matches!(next_non_ping(&mut h).await, Some(Frame::Open { .. })), "le tunnel sert toujours");
+    assert_eq!(relay.relay.metrics().renewals_accepted.get(), 1);
+}
+
+#[tokio::test]
+async fn renew_for_another_host_is_refused() {
+    let relay = start(config(|_| {})).await;
+    let mut h = house(&relay).await;
+    h.handshake(HOST).await;
+    h.renew(&testkit::tunnel_token(OTHER_HOST, 3600), &testkit::house_key()).await;
+    assert!(matches!(next_non_ping(&mut h).await, Some(Frame::GoAway { code: GoAwayCode::AuthFailed, .. })));
+    assert_eq!(next_non_ping(&mut h).await, None);
+    wait_for("tunnel retiré", || relay.relay.metrics().tunnels.get() == 0).await;
+    assert_eq!(relay.relay.metrics().renewals_refused.get(), 1);
+}
+
+#[tokio::test]
+async fn renew_signed_for_another_session_is_refused() {
+    let relay = start(config(|_| {})).await;
+    let mut h = house(&relay).await;
+    h.handshake(HOST).await;
+    let frame = agendo_access_protocol::tunnel::renew_frame(&testkit::tunnel_token(HOST, 3600), &testkit::house_key(), &[0; 32]);
+    h.send(&frame).await;
+    assert!(matches!(next_non_ping(&mut h).await, Some(Frame::GoAway { code: GoAwayCode::AuthFailed, .. })));
+    // Jeton expiré : refusé aussi.
+    let mut h = house(&relay).await;
+    h.handshake(HOST).await;
+    h.renew(&testkit::tunnel_token(HOST, -1), &testkit::house_key()).await;
+    assert!(matches!(next_non_ping(&mut h).await, Some(Frame::GoAway { code: GoAwayCode::AuthFailed, .. })));
+}
+
+#[tokio::test]
+async fn renewed_from_the_house_is_a_protocol_error() {
+    let relay = start(config(|_| {})).await;
+    let mut h = house(&relay).await;
+    h.handshake(HOST).await;
+    h.send(&Frame::Renewed { expires_at: 1 }).await;
+    assert!(matches!(next_non_ping(&mut h).await, Some(Frame::GoAway { code: GoAwayCode::ProtocolError, .. })));
 }
 
 #[tokio::test]

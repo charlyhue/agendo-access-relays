@@ -2,15 +2,20 @@
 //!
 //! 1. place libre (sinon 503), corps ≤ `max_body` (sinon 413) ;
 //! 2. jeton push (`Authorization: Bearer`) vérifié avec les clés de confiance (sinon 401) ;
-//! 3. `Agendo-Signature` vérifiée avec la clé `house_key` du jeton, sur la méthode, le chemin et
-//!    la requête de la ligne de requête, l'heure et le corps (sinon 401) ;
+//! 3. `Agendo-Signature` vérifiée avec la clé `house_key` du jeton, sur la maison, la méthode,
+//!    le chemin et la requête de la ligne de requête, l'heure et le corps ; la maison qu'elle
+//!    nomme (`house`) doit être celle du jeton (`sub`) (sinon 401) ;
 //! 4. corps JSON lu et validé (`PushRequest::validate`, sinon 400), plateforme servie par ce
 //!    relais (sinon 400) ;
 //! 5. quotas du jeton (sinon 429) ;
-//! 6. remise : `sent` et `unregistered` en 200, `rejected` par APNs/FCM en 422, service
-//!    indisponible en 502.
+//! 6. remise : `sent` et `unregistered` en 200, `rejected` par APNs/FCM en 422, panne passagère
+//!    d'APNs/FCM (5xx, 429, délai dépassé) en 502 `unavailable`.
 //!
-//! Réponse toujours en JSON : `{ "status": "sent" | "unregistered" | "rejected" | "quota", "detail"? }`.
+//! `unavailable` (502, ou 503 si le relais est surchargé) est le seul statut passager
+//! (`PushStatus::is_temporary`) : la maison réessaie plus tard, ou auprès d'un autre relais push.
+//! `rejected` et `quota` sont définitifs.
+//!
+//! Réponse toujours en JSON : `{ "status": "sent" | "unregistered" | "rejected" | "quota" | "unavailable", "detail"? }`.
 //! Le journal ne contient ni jeton, ni signature, ni jeton de téléphone, ni chiffré.
 
 use std::{sync::Arc, time::Instant};
@@ -82,8 +87,8 @@ impl Refusal {
 async fn push(State(state): State<Arc<PushState>>, request: Request) -> Response {
     let started = Instant::now();
     let Ok(_slot) = state.slots.try_acquire() else {
-        state.metrics.rejected.inc();
-        return answer(StatusCode::SERVICE_UNAVAILABLE, PushStatus::Rejected, Some("relais surchargé, réessayer".into()));
+        state.metrics.unavailable.inc();
+        return answer(StatusCode::SERVICE_UNAVAILABLE, PushStatus::Unavailable, Some("relais surchargé, réessayer".into()));
     };
     let (claims, push) = match check(&state, request).await {
         Ok(checked) => checked,
@@ -118,7 +123,7 @@ async fn push(State(state): State<Arc<PushState>>, request: Request) -> Response
                 Platform::Android => state.metrics.upstream_android.inc(),
             }
             tracing::warn!(maison = %claims.sub, plateforme = platform, raison = %reason, "service de notifications en erreur");
-            (StatusCode::BAD_GATEWAY, PushStatus::Rejected, Some("service de notifications indisponible".into()))
+            (StatusCode::BAD_GATEWAY, PushStatus::Unavailable, Some("service de notifications indisponible, réessayer".into()))
         }
     };
     match status {
@@ -126,6 +131,7 @@ async fn push(State(state): State<Arc<PushState>>, request: Request) -> Response
         PushStatus::Unregistered => state.metrics.unregistered.inc(),
         PushStatus::Rejected => state.metrics.rejected.inc(),
         PushStatus::Quota => state.metrics.quota.inc(),
+        PushStatus::Unavailable => state.metrics.unavailable.inc(),
     }
     tracing::info!(
         maison = %claims.sub,
@@ -160,8 +166,11 @@ async fn check(state: &PushState, request: Request) -> Result<(PushClaims, PushR
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| Refusal::rejected(StatusCode::UNAUTHORIZED, "en-tête Agendo-Signature absent"))?;
     let path = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or(parts.uri.path());
-    verify_request(signature, parts.method.as_str(), path, &body, now, &house_key)
+    let signed = verify_request(signature, parts.method.as_str(), path, &body, now, &house_key)
         .map_err(|e| Refusal::rejected(StatusCode::UNAUTHORIZED, format!("signature refusée : {e}")))?;
+    if signed.house != claims.sub {
+        return Err(Refusal::rejected(StatusCode::UNAUTHORIZED, "signature d'une autre maison que celle du jeton push"));
+    }
     let push: PushRequest = serde_json::from_slice(&body).map_err(|_| Refusal::rejected(StatusCode::BAD_REQUEST, "corps JSON invalide"))?;
     push.validate().map_err(|e| Refusal::rejected(StatusCode::BAD_REQUEST, e.to_string()))?;
     let served = match push.platform {
@@ -224,7 +233,7 @@ mod tests {
     fn push_token(quotas: Quotas, lifetime: i64) -> String {
         PushClaims {
             iss: "https://api.exemple.fr".into(),
-            sub: "maison-1".into(),
+            sub: HOUSE.into(),
             house_key: encode_public_key(&house().verifying_key()),
             iat: now() - 10,
             exp: now() + lifetime,
@@ -234,6 +243,8 @@ mod tests {
     }
 
     const Q: Quotas = Quotas { per_hour: 100, critical_per_day: 10 };
+    /// `sub` du jeton push, que la signature doit nommer.
+    const HOUSE: &str = "maison-1";
 
     struct Relay {
         addr: SocketAddr,
@@ -277,7 +288,7 @@ mod tests {
 
     async fn send(relay: &Relay, request: &PushRequest) -> (S, PushResponse) {
         let b = body(request);
-        let sig = sign_request(&house(), "POST", "/v1/push", &b, now());
+        let sig = sign_request(&house(), HOUSE, "POST", "/v1/push", &b, now());
         post(relay, "/v1/push", Some(&push_token(Q, 3600)), Some(sig), b).await
     }
 
@@ -301,16 +312,47 @@ mod tests {
         let relay = start_with(S::BAD_REQUEST, r#"{"reason":"BadDeviceToken"}"#, PushLimits::default()).await;
         let (code, r) = send(&relay, &apns::tests::request(PushLevel::Active)).await;
         assert_eq!((code, r.status, r.detail.as_deref()), (S::UNPROCESSABLE_ENTITY, PushStatus::Rejected, Some("BadDeviceToken")));
+    }
+
+    #[tokio::test]
+    async fn upstream_failure_is_unavailable_and_temporary() {
         let relay = start_with(S::SERVICE_UNAVAILABLE, "{}", PushLimits::default()).await;
         let (code, r) = send(&relay, &apns::tests::request(PushLevel::Active)).await;
-        assert_eq!((code, r.status), (S::BAD_GATEWAY, PushStatus::Rejected));
+        assert_eq!((code, r.status), (S::BAD_GATEWAY, PushStatus::Unavailable));
+        assert!(r.status.is_temporary());
+        assert_eq!(relay.state.metrics.unavailable.get(), 1);
+        assert_eq!(relay.state.metrics.upstream_ios.get(), 1);
+        let relay = start_with(S::TOO_MANY_REQUESTS, r#"{"reason":"TooManyRequests"}"#, PushLimits::default()).await;
+        assert_eq!(send(&relay, &apns::tests::request(PushLevel::Active)).await.1.status, PushStatus::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn signature_must_name_the_house_of_the_token() {
+        let relay = start().await;
+        let token = push_token(Q, 3600);
+        let b = body(&apns::tests::request(PushLevel::Active));
+        // Bonne clé, mais la signature nomme une autre maison que le `sub` du jeton.
+        let other = sign_request(&house(), "maison-2", "POST", "/v1/push", &b, now());
+        let (code, r) = post(&relay, "/v1/push", Some(&token), Some(other), b.clone()).await;
+        assert_eq!((code, r.status), (S::UNAUTHORIZED, PushStatus::Rejected));
+        // Ancienne forme, sans `house` : refusée.
+        let old = sign_request(&house(), HOUSE, "POST", "/v1/push", &b, now()).replace("house=maison-1,", "");
+        assert_eq!(post(&relay, "/v1/push", Some(&token), Some(old), b).await.0, S::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn ios_token_must_be_lowercase_hex() {
+        let relay = start().await;
+        let upper = PushRequest { device: apns::tests::request(PushLevel::Active).device.to_uppercase(), ..apns::tests::request(PushLevel::Active) };
+        let (code, r) = send(&relay, &upper).await;
+        assert_eq!((code, r.status), (S::BAD_REQUEST, PushStatus::Rejected));
     }
 
     #[tokio::test]
     async fn token_is_required_and_checked() {
         let relay = start().await;
         let b = body(&apns::tests::request(PushLevel::Active));
-        let sig = || Some(sign_request(&house(), "POST", "/v1/push", &b, now()));
+        let sig = || Some(sign_request(&house(), HOUSE, "POST", "/v1/push", &b, now()));
         let (code, r) = post(&relay, "/v1/push", None, sig(), b.clone()).await;
         assert_eq!((code, r.status), (S::UNAUTHORIZED, PushStatus::Rejected));
         let (code, _) = post(&relay, "/v1/push", Some(&push_token(Q, -1)), sig(), b.clone()).await;
@@ -335,16 +377,16 @@ mod tests {
         let b = body(&apns::tests::request(PushLevel::Active));
         let (code, _) = post(&relay, "/v1/push", Some(&token), None, b.clone()).await;
         assert_eq!(code, S::UNAUTHORIZED, "sans signature");
-        let other_body = sign_request(&house(), "POST", "/v1/push", b"{}", now());
+        let other_body = sign_request(&house(), HOUSE, "POST", "/v1/push", b"{}", now());
         assert_eq!(post(&relay, "/v1/push", Some(&token), Some(other_body), b.clone()).await.0, S::UNAUTHORIZED);
-        let stale = sign_request(&house(), "POST", "/v1/push", &b, now() - 120);
+        let stale = sign_request(&house(), HOUSE, "POST", "/v1/push", &b, now() - 120);
         assert_eq!(post(&relay, "/v1/push", Some(&token), Some(stale), b.clone()).await.0, S::UNAUTHORIZED);
-        let other_key = sign_request(&SigningKey::from_bytes(&[3; 32]), "POST", "/v1/push", &b, now());
+        let other_key = sign_request(&SigningKey::from_bytes(&[3; 32]), HOUSE, "POST", "/v1/push", &b, now());
         assert_eq!(post(&relay, "/v1/push", Some(&token), Some(other_key), b.clone()).await.0, S::UNAUTHORIZED);
         // La requête `?…` fait partie du chemin signé.
-        let with_query = sign_request(&house(), "POST", "/v1/push?essai=1", &b, now());
+        let with_query = sign_request(&house(), HOUSE, "POST", "/v1/push?essai=1", &b, now());
         assert_eq!(post(&relay, "/v1/push?essai=1", Some(&token), Some(with_query), b.clone()).await.0, S::OK);
-        let without_query = sign_request(&house(), "POST", "/v1/push", &b, now());
+        let without_query = sign_request(&house(), HOUSE, "POST", "/v1/push", &b, now());
         assert_eq!(post(&relay, "/v1/push?essai=1", Some(&token), Some(without_query), b).await.0, S::UNAUTHORIZED);
     }
 
@@ -352,7 +394,7 @@ mod tests {
     async fn invalid_bodies_are_rejected() {
         let relay = start_with(S::OK, "", PushLimits { max_body: 4096, ..PushLimits::default() }).await;
         let token = push_token(Q, 3600);
-        let signed = |b: &[u8]| Some(sign_request(&house(), "POST", "/v1/push", b, now()));
+        let signed = |b: &[u8]| Some(sign_request(&house(), HOUSE, "POST", "/v1/push", b, now()));
         let (code, r) = post(&relay, "/v1/push", Some(&token), signed(b"pas du json"), b"pas du json".to_vec()).await;
         assert_eq!((code, r.status), (S::BAD_REQUEST, PushStatus::Rejected));
         let long = body(&PushRequest { collapse_id: Some("x".repeat(65)), ..apns::tests::request(PushLevel::Active) });
@@ -366,10 +408,10 @@ mod tests {
         let relay = start().await;
         let token = push_token(Quotas { per_hour: 1, critical_per_day: 0 }, 3600);
         let b = body(&apns::tests::request(PushLevel::Critical));
-        let (code, r) = post(&relay, "/v1/push", Some(&token), Some(sign_request(&house(), "POST", "/v1/push", &b, now())), b).await;
+        let (code, r) = post(&relay, "/v1/push", Some(&token), Some(sign_request(&house(), HOUSE, "POST", "/v1/push", &b, now())), b).await;
         assert_eq!((code, r.status), (S::TOO_MANY_REQUESTS, PushStatus::Quota));
         let b = body(&apns::tests::request(PushLevel::Active));
-        let sig = || Some(sign_request(&house(), "POST", "/v1/push", &b, now()));
+        let sig = || Some(sign_request(&house(), HOUSE, "POST", "/v1/push", &b, now()));
         assert_eq!(post(&relay, "/v1/push", Some(&token), sig(), b.clone()).await.1.status, PushStatus::Sent);
         assert_eq!(post(&relay, "/v1/push", Some(&token), sig(), b.clone()).await.1.status, PushStatus::Quota);
         assert_eq!(relay.state.metrics.quota.get(), 2);
@@ -422,7 +464,7 @@ mod tests {
         let request = apns::tests::request(PushLevel::Active);
         let token = push_token(Q, 3600);
         let b = body(&request);
-        let sig = sign_request(&house(), "POST", "/v1/push", &b, now());
+        let sig = sign_request(&house(), HOUSE, "POST", "/v1/push", &b, now());
         assert_eq!(post(&relay, "/v1/push", Some(&token), Some(sig.clone()), b.clone()).await.0, S::OK);
         assert_eq!(post(&relay, "/v1/push", Some(&token), None, b).await.0, S::UNAUTHORIZED);
         tokio::time::sleep(Duration::from_millis(50)).await;

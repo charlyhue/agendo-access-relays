@@ -13,10 +13,13 @@ cargo-fuzz = true
 [workspace]
 
 [dependencies]
-agendo-access-protocol = { git = "file:///Users/chue/workspace/agendo", branch = "agendo-access" }
+agendo-access-protocol = { git = "ssh://git@github.com/charlyhue/agendo.git", tag = "v0.42.0" }
 libfuzzer-sys = "0.4"
-relay-sni = { path = "../crates/relay-sni" }
+relay-common = { path = "../crates/relay-common" }
+relay-sni = { path = "../crates/relay-sni", features = ["testkit"] }
 serde_json = "1"
+tokio = { version = "1", features = ["rt", "io-util", "time", "macros", "test-util"] }
+tokio-util = "0.7"
 
 [[bin]]
 name = "client_hello"
@@ -42,6 +45,13 @@ bench = false
 [[bin]]
 name = "push_request"
 path = "fuzz_targets/push_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tunnel_session"
+path = "fuzz_targets/tunnel_session.rs"
 test = false
 doc = false
 bench = false

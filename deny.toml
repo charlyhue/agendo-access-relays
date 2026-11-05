@@ -39,9 +39,5 @@ allow-wildcard-paths = true
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# Le protocole commun vient du dépôt du socle (URL locale en développement, réécrite vers
-# GitHub en CI : voir docs/deploy-dokploy.md).
-allow-git = [
-    "file:///Users/chue/workspace/agendo",
-    "ssh://git@github.com/charlyhue/agendo.git",
-]
+# Le protocole commun vient du dépôt du socle, à un tag.
+allow-git = ["ssh://git@github.com/charlyhue/agendo.git"]
