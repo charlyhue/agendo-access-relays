@@ -14,6 +14,8 @@ pub struct SniMetrics {
     pub handshakes_refused: Counter,
     pub handshakes_failed: Counter,
     pub tunnels_replaced: Counter,
+    pub renewals_accepted: Counter,
+    pub renewals_refused: Counter,
     pub public_routed: Counter,
     pub public_unknown_host: Counter,
     pub public_bad_hello: Counter,
@@ -29,6 +31,7 @@ impl SniMetrics {
         let handshakes = "Poignées de main des tunnels, par issue.";
         let public = "Connexions du port public, par issue.";
         let bytes = "Octets recopiés, par sens.";
+        let renewals = "Renouvellements de jeton sur un tunnel ouvert (RENEW), par issue.";
         Self {
             tunnels: r.gauge("relay_sni_tunnels", "Tunnels ouverts.", &[]),
             streams: r.gauge("relay_sni_streams", "Flux ouverts.", &[]),
@@ -36,6 +39,8 @@ impl SniMetrics {
             handshakes_refused: r.counter("relay_sni_handshakes_total", handshakes, &[("result", "refused")]),
             handshakes_failed: r.counter("relay_sni_handshakes_total", handshakes, &[("result", "failed")]),
             tunnels_replaced: r.counter("relay_sni_tunnels_replaced_total", "Tunnels remplacés par une connexion plus récente.", &[]),
+            renewals_accepted: r.counter("relay_sni_renewals_total", renewals, &[("result", "accepted")]),
+            renewals_refused: r.counter("relay_sni_renewals_total", renewals, &[("result", "refused")]),
             public_routed: r.counter("relay_sni_public_connections_total", public, &[("result", "routed")]),
             public_unknown_host: r.counter("relay_sni_public_connections_total", public, &[("result", "unknown_host")]),
             public_bad_hello: r.counter("relay_sni_public_connections_total", public, &[("result", "bad_hello")]),

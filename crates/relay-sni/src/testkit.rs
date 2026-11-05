@@ -9,7 +9,7 @@ use agendo_access_protocol::{
     frame::Frame,
     keys::{TrustedKey, TrustedKeys, encode_public_key},
     token::TunnelClaims,
-    tunnel::auth_frame,
+    tunnel::{auth_frame, renew_frame},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -52,11 +52,13 @@ pub fn tunnel_token(host: &str, lifetime: i64) -> String {
 pub struct HouseConn<S> {
     pub io: S,
     reader: FrameReader,
+    /// Défi de la session (reçu dans `CHALLENGE`), qui signe aussi les `RENEW`.
+    pub nonce: Option<[u8; 32]>,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> HouseConn<S> {
     pub fn new(io: S) -> Self {
-        Self { io, reader: FrameReader::new() }
+        Self { io, reader: FrameReader::new(), nonce: None }
     }
 
     pub async fn send(&mut self, frame: &Frame) {
@@ -81,8 +83,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HouseConn<S> {
             Some(Frame::Challenge { nonce, .. }) => nonce,
             other => return other.expect("le relais a fermé avant CHALLENGE"),
         };
+        self.nonce = Some(nonce);
         self.send(&auth_frame(token, key, &nonce)).await;
         self.recv().await.expect("le relais a fermé avant READY")
+    }
+
+    /// `RENEW` avec `token`, signé par `key` avec le défi de la session.
+    pub async fn renew(&mut self, token: &str, key: &SigningKey) {
+        let nonce = self.nonce.expect("RENEW avant la poignée de main");
+        self.send(&renew_frame(token, key, &nonce)).await;
     }
 
     /// Poignée de main réussie pour `host`.
@@ -141,7 +150,7 @@ pub async fn serve_tls<S>(conn: HouseConn<S>, window: u32, tls: Arc<rustls::Serv
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let HouseConn { io, mut reader } = conn;
+    let HouseConn { io, mut reader, .. } = conn;
     let (mut rd, mut wr) = tokio::io::split(io);
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Frame>();
     tokio::spawn(async move {

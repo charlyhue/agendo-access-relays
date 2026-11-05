@@ -187,12 +187,14 @@ async fn accept_tunnel(mut tcp: tokio::net::TcpStream, peer: SocketAddr, state: 
     let setup = TunnelSetup {
         id: state.next_tunnel.fetch_add(1, Ordering::Relaxed),
         claims: accepted.claims,
+        nonce: accepted.nonce,
+        keys: &state.config.trusted_keys,
+        zone: &state.config.zone,
         peer_ip: house_addr.ip(),
         limits,
         registry: &state.registry,
         metrics,
         shutdown: &state.shutdown,
-        now,
     };
     tunnel::serve(tcp, reader, setup).await;
 }

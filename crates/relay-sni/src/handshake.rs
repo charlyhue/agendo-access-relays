@@ -45,6 +45,8 @@ pub struct HandshakeParams<'a> {
 pub struct Accepted {
     pub claims: TunnelClaims,
     pub version: u16,
+    /// Défi de la session, gardé pour vérifier les `RENEW`.
+    pub nonce: [u8; 32],
 }
 
 /// Échec de la poignée de main. `Refused` a déjà été signifié à la maison par `GOAWAY`.
@@ -97,7 +99,7 @@ async fn run<S: AsyncRead + AsyncWrite + Unpin>(
     };
     let ping_interval_secs = u32::try_from(params.ping_interval.as_secs()).unwrap_or(u32::MAX).max(1);
     send(io, &Frame::Ready { host: claims.host.clone(), initial_window: params.initial_window, ping_interval_secs }).await?;
-    Ok(Accepted { claims, version })
+    Ok(Accepted { claims, version, nonce })
 }
 
 fn new_nonce() -> [u8; 32] {
@@ -180,6 +182,7 @@ mod tests {
         let accepted = task.await.unwrap().unwrap();
         assert_eq!(accepted.claims.host, HOST);
         assert_eq!(accepted.version, PROTOCOL_VERSION);
+        assert_eq!(Some(accepted.nonce), house.nonce, "le relais garde le défi de la session");
     }
 
     #[tokio::test]
@@ -238,6 +241,12 @@ mod tests {
         assert_eq!(house.recv().await.map(|f| f.kind()), Some(FrameType::Challenge));
         house.send(&Frame::Hello { min: 1, max: 1 }).await;
         assert_eq!(goaway_code(house.recv().await.unwrap()), GoAwayCode::ProtocolError, "HELLO au lieu d'AUTH");
+
+        let (mut house, _task) = start(Duration::from_secs(5));
+        house.send(&Frame::Hello { min: 1, max: 1 }).await;
+        let Some(Frame::Challenge { nonce, .. }) = house.recv().await else { panic!("CHALLENGE attendu") };
+        house.send(&agendo_access_protocol::tunnel::renew_frame(&tunnel_token(HOST, 3600), &house_key(), &nonce)).await;
+        assert_eq!(goaway_code(house.recv().await.unwrap()), GoAwayCode::ProtocolError, "RENEW avant READY");
     }
 
     #[tokio::test]
