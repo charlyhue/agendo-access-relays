@@ -11,9 +11,9 @@ trois endroits (et la configuration du plan de contrôle), sans nouvelle image.
 
 | Rôle | Nom | Remarque |
 |---|---|---|
-| zone des maisons (`ZONE_MAISONS`) | `<id>.agendo.charly-hue.fr` | joker `*.agendo.charly-hue.fr` : une adresse A/AAAA **par relais** |
-| tunnels des maisons, un nom par instance | `agendo-relay-1.charly-hue.fr`, `agendo-relay-2.charly-hue.fr`… | TLS terminé par Traefik, puis `relay-sni:9443` |
-| relais push, un nom par instance | `agendo-push-1.charly-hue.fr`, `agendo-push-2.charly-hue.fr`… | HTTP derrière Traefik, puis `relay-push:8080` |
+| zone des maisons (`ZONE_MAISONS`) | `<id>.home.agendo.charly-hue.fr` | joker `*.home.agendo.charly-hue.fr` : une adresse A/AAAA **par relais** |
+| tunnels des maisons, un nom par instance | `relay-1.agendo.charly-hue.fr`, `relay-2.agendo.charly-hue.fr`… | TLS terminé par Traefik, puis `relay-sni:9443` |
+| relais push, un nom par instance | `push-1.agendo.charly-hue.fr`, `push-2.agendo.charly-hue.fr`… | HTTP derrière Traefik, puis `relay-push:8080` |
 
 En V1, seules les instances `-1` existent. Les noms des tunnels et du push ne sont jamais
 partagés entre plusieurs IP : Traefik obtient leurs certificats par le défi HTTP-01, et
@@ -36,8 +36,8 @@ sur un domaine provisoire. Elle reste à faire sur le domaine définitif.
   `:80`). La configuration dynamique est lue dans `/etc/dokploy/traefik/dynamic/`
   (surveillée : pas de redémarrage nécessaire).
 - **`HostSNIRegexp`** : en v3, c'est une expression régulière Go
-  (``HostSNIRegexp(`^[a-z0-9]+\.agendo\.charly-hue\.fr$`)``), sans les gabarits `{nom}` de
-  la v2. `HostSNI` accepte aussi un joker d'un niveau (``HostSNI(`*.agendo.charly-hue.fr`)``).
+  (``HostSNIRegexp(`^[a-z0-9]+\.home\.agendo\.charly-hue\.fr$`)``), sans les gabarits `{nom}` de
+  la v2. `HostSNI` accepte aussi un joker d'un niveau (``HostSNI(`*.home.agendo.charly-hue.fr`)``).
   L'expression n'admet qu'une étiquette de minuscules et de chiffres devant la zone ; le
   relais refuse ensuite tout nom qu'aucune maison connectée ne sert.
 - **`proxyProtocol`** : depuis Traefik v3.5.2, il se règle dans un
@@ -58,28 +58,28 @@ V1, un seul serveur (IP `IP1`) :
 
 | Enregistrement | Type | Valeur | TTL |
 |---|---|---|---|
-| `*.agendo.charly-hue.fr` | A (et AAAA si le VPS a de l'IPv6) | `IP1` | **60 s** |
-| `agendo-relay-1.charly-hue.fr` | A, AAAA | `IP1` | défaut |
-| `agendo-push-1.charly-hue.fr` | A, AAAA | `IP1` | défaut |
+| `*.home.agendo.charly-hue.fr` | A (et AAAA si le VPS a de l'IPv6) | `IP1` | **60 s** |
+| `relay-1.agendo.charly-hue.fr` | A, AAAA | `IP1` | défaut |
+| `push-1.agendo.charly-hue.fr` | A, AAAA | `IP1` | défaut |
 
-Le port 80 doit rester ouvert : Let's Encrypt valide `agendo-relay-1` et `agendo-push-1` en
+Le port 80 doit rester ouvert : Let's Encrypt valide `relay-1.agendo` et `push-1.agendo` en
 HTTP-01. Les certificats des maisons ne passent pas par Traefik : chaque maison obtient le sien
-en DNS-01 (`_acme-challenge.<id>.agendo.charly-hue.fr`, posé par le plan de contrôle), et sa
+en DNS-01 (`_acme-challenge.<id>.home.agendo.charly-hue.fr`, posé par le plan de contrôle), et sa
 clé reste chez elle. Le fournisseur DNS de `charly-hue.fr` doit donc être celui que pilote le
 plan de contrôle.
 
 ### Plusieurs relais : une adresse par relais dans le joker
 
 Chaque maison ouvre un tunnel vers **chacun** des relais que lui annonce le plan de contrôle
-(`relays: ["tls://agendo-relay-1.charly-hue.fr", "tls://agendo-relay-2.charly-hue.fr"]`).
+(`relays: ["tls://relay-1.agendo.charly-hue.fr", "tls://relay-2.agendo.charly-hue.fr"]`).
 Toutes les maisons sont donc joignables par tous les relais, et le joker
-`*.agendo.charly-hue.fr` porte une adresse A/AAAA par relais : un navigateur qui arrive sur
+`*.home.agendo.charly-hue.fr` porte une adresse A/AAAA par relais : un navigateur qui arrive sur
 n'importe laquelle trouve la maison.
 
 ### Panne d'un relais : retirer son IP
 
-1. Retirer l'adresse du serveur en panne (A et AAAA) de `*.agendo.charly-hue.fr`. Ne pas
-   toucher à `agendo-relay-N` ni à `agendo-push-N`.
+1. Retirer l'adresse du serveur en panne (A et AAAA) de `*.home.agendo.charly-hue.fr`. Ne pas
+   toucher à `relay-N.agendo` ni à `push-N.agendo`.
 2. Avec un TTL de 60 s, les résolveurs oublient l'adresse en une minute environ. Certains
    navigateurs et résolveurs gardent une réponse un peu plus longtemps : prévoir quelques
    minutes. Un navigateur qui a reçu les deux adresses essaie souvent l'autre de lui-même
@@ -111,7 +111,7 @@ Tant que les images sont privées, déclarer le registre dans Dokploy (**Setting
 - **Réplicas : 1, impérativement.** Le tunnel d'une maison arrive sur une seule instance. Avec
   deux réplicas derrière le même Traefik, un client pourrait arriver sur l'instance qui ne la
   connaît pas. Plusieurs relais, ce sont plusieurs serveurs, chacun avec son nom
-  `agendo-relay-N` annoncé aux maisons par le plan de contrôle (voir « Deuxième serveur »),
+  `relay-N.agendo` annoncé aux maisons par le plan de contrôle (voir « Deuxième serveur »),
   pas des réplicas.
 - **Domaines** : aucun dans l'interface. Le routage TCP passe par le fichier dynamique
   ci-dessous.
@@ -127,7 +127,7 @@ Variables d'environnement :
 
 | Variable | Valeur | Remarque |
 |---|---|---|
-| `RELAY_SNI_ZONE` | `agendo.charly-hue.fr` | `ZONE_MAISONS` : seuls les jetons d'un hôte de cette zone sont admis |
+| `RELAY_SNI_ZONE` | `home.agendo.charly-hue.fr` | `ZONE_MAISONS` : seuls les jetons d'un hôte de cette zone sont admis |
 | `RELAY_TRUSTED_KEYS` | `k1=<clé publique>` | clés publiques du plan de contrôle (`GET /.well-known/agendo-access/keys`), plusieurs pour une rotation : `k1=…,k2=…` |
 | `RELAY_SNI_PROXY_FROM` | sous-réseau de `dokploy-network` | `docker network inspect dokploy-network -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}'`. Seul Traefik doit pouvoir envoyer l'en-tête PROXY. |
 | `RELAY_METRICS_ADDR` | `0.0.0.0:9100` | si un collecteur lit les métriques depuis le réseau Docker ; défaut `127.0.0.1:9100` |
@@ -154,10 +154,10 @@ défaut). Le pire cas vaut à peu près `RELAY_SNI_MAX_CONNECTIONS × 2 × fenê
 ## Application `relay-push`
 
 - **Source** : Docker, image `ghcr.io/charlyhue/agendo-relay-push:main`.
-- **Domaine** (interface Dokploy) : `agendo-push-1.charly-hue.fr`, chemin `/`, port du
+- **Domaine** (interface Dokploy) : `push-1.agendo.charly-hue.fr`, chemin `/`, port du
   conteneur `8080`, HTTPS, certificat `letsencrypt`. C'est un routeur HTTP ordinaire. Le plan
   de contrôle l'annonce aux maisons par son URL de base
-  (`push_urls: ["https://agendo-push-1.charly-hue.fr"]`).
+  (`push_urls: ["https://push-1.agendo.charly-hue.fr"]`).
 - **Réplicas** : 1 suffit. Avec plusieurs, les quotas (en mémoire, par instance) deviennent
   plus larges d'autant.
 - **Montages** (*Advanced → Mounts → File Mount*), contenus collés dans Dokploy, jamais dans
@@ -191,7 +191,7 @@ Codes rendus par `POST /v1/push` : `200` (`sent`, `unregistered`), `400`/`401`/`
 (`rejected` par le relais), `422` (`rejected` par APNs ou FCM), `429` (`quota`), `502`
 (`unavailable` : APNs ou FCM en panne passagère, 5xx, 429 ou délai dépassé), `503`
 (`unavailable` : relais surchargé). Seul `unavailable` vaut un nouvel essai, plus tard ou
-auprès d'un autre `agendo-push-N` ; `rejected` et `quota` sont définitifs.
+auprès d'un autre `push-N.agendo` ; `rejected` et `quota` sont définitifs.
 
 L'en-tête `Agendo-Signature` nomme la maison (`house=<id>,t=…,sig=…`) : elle doit être celle
 du jeton push (`sub`), sinon `401`.
@@ -209,14 +209,14 @@ tcp:
     # Navigateurs et app vers une maison : TLS jamais déchiffré.
     agendo-maisons:
       entryPoints: [websecure]
-      rule: 'HostSNIRegexp(`^[a-z0-9]+\.agendo\.charly-hue\.fr$`)'
+      rule: 'HostSNIRegexp(`^[a-z0-9]+\.home\.agendo\.charly-hue\.fr$`)'
       tls:
         passthrough: true
       service: agendo-relay-sni-public
     # Tunnels des maisons : TLS terminé par Traefik. Nom propre à ce serveur (-1, -2…).
     agendo-tunnels:
       entryPoints: [websecure]
-      rule: 'HostSNI(`agendo-relay-1.charly-hue.fr`)'
+      rule: 'HostSNI(`relay-1.agendo.charly-hue.fr`)'
       tls:
         certResolver: letsencrypt
       service: agendo-relay-sni-tunnels
@@ -246,12 +246,12 @@ relais ne verrait que l'IP de Traefik, et la limite de tunnels par IP ne limiter
 Vérifications après déploiement :
 
 ```sh
-# Le certificat d'agendo-relay-1 est servi par Traefik.
-openssl s_client -connect agendo-relay-1.charly-hue.fr:443 -servername agendo-relay-1.charly-hue.fr </dev/null | head -5
+# Le certificat de relay-1.agendo est servi par Traefik.
+openssl s_client -connect relay-1.agendo.charly-hue.fr:443 -servername relay-1.agendo.charly-hue.fr </dev/null | head -5
 # Un nom de maison inconnu : connexion fermée par le relais, sans réponse TLS.
-openssl s_client -connect inconnue.agendo.charly-hue.fr:443 -servername inconnue.agendo.charly-hue.fr </dev/null
+openssl s_client -connect inconnue.home.agendo.charly-hue.fr:443 -servername inconnue.home.agendo.charly-hue.fr </dev/null
 # Relais push : refus explicite sans jeton.
-curl -s -X POST https://agendo-push-1.charly-hue.fr/v1/push   # {"status":"rejected","detail":"jeton push absent"}
+curl -s -X POST https://push-1.agendo.charly-hue.fr/v1/push   # {"status":"rejected","detail":"jeton push absent"}
 ```
 
 Dans les logs du relais SNI (`relais SNI à l'écoute`, puis `tunnel ouvert` pour chaque maison),
@@ -268,21 +268,21 @@ distant**), avec les mêmes applications et la même configuration. Seuls change
    SSH), puis **Setup Server**. Dokploy y installe Docker, le réseau `dokploy-network` et son
    propre Traefik (même version, même entrée `websecure`, même résolveur `letsencrypt`).
 2. **DNS**, dans cet ordre :
-   - `agendo-relay-2.charly-hue.fr` et `agendo-push-2.charly-hue.fr` (A/AAAA) vers `IP2` ;
-   - **pas encore** `IP2` dans le joker `*.agendo.charly-hue.fr`.
+   - `relay-2.agendo.charly-hue.fr` et `push-2.agendo.charly-hue.fr` (A/AAAA) vers `IP2` ;
+   - **pas encore** `IP2` dans le joker `*.home.agendo.charly-hue.fr`.
 3. **Applications** : créer `relay-sni` et `relay-push` en choisissant le serveur 2 à la
    création, avec la même image, les mêmes variables et les mêmes montages (clé `.p8`, compte
    FCM). Seule différence : `RELAY_SNI_PROXY_FROM` prend le sous-réseau de `dokploy-network`
    **du serveur 2** (même commande `docker network inspect`, lancée sur ce serveur). Domaine
-   du push : `agendo-push-2.charly-hue.fr`.
+   du push : `push-2.agendo.charly-hue.fr`.
 4. **Traefik du serveur 2** : le même fichier `agendo-relais.yml`, avec
-   ``HostSNI(`agendo-relay-2.charly-hue.fr`)`` pour les tunnels et l'`appName` des
+   ``HostSNI(`relay-2.agendo.charly-hue.fr`)`` pour les tunnels et l'`appName` des
    applications du serveur 2. Le routeur des maisons ne change pas.
-5. **Plan de contrôle** : ajouter `tls://agendo-relay-2.charly-hue.fr` à la liste des relais et
-   `https://agendo-push-2.charly-hue.fr` à celle des relais push. Les maisons la reçoivent au
+5. **Plan de contrôle** : ajouter `tls://relay-2.agendo.charly-hue.fr` à la liste des relais et
+   `https://push-2.agendo.charly-hue.fr` à celle des relais push. Les maisons la reçoivent au
    renouvellement suivant de leurs jetons (6 h au plus) et ouvrent un second tunnel.
 6. **Vérifier** sur le serveur 2 que les tunnels arrivent (`relay_sni_tunnels` égal au nombre
-   de maisons rattachées), **puis** ajouter `IP2` au joker `*.agendo.charly-hue.fr`. Avant
+   de maisons rattachées), **puis** ajouter `IP2` au joker `*.home.agendo.charly-hue.fr`. Avant
    cela, un navigateur envoyé vers `IP2` n'y trouverait aucune maison.
 7. **CI** : ajouter l'URL du webhook de chaque nouvelle application, sur une nouvelle ligne,
    dans le secret existant (`DOKPLOY_WEBHOOK_RELAY_SNI`, `DOKPLOY_WEBHOOK_RELAY_PUSH`). La CI
@@ -312,7 +312,7 @@ de passe, pour pouvoir les remonter.
 ## Mode autonome
 
 Pour un relais sur un VPS sans Traefik : `RELAY_SNI_PROXY_PROTOCOL=off`, port public publié
-sur `443`. La terminaison TLS de `agendo-relay-N` sur le port des tunnels n'est **pas**
+sur `443`. La terminaison TLS de `relay-N.agendo` sur le port des tunnels n'est **pas**
 implémentée en V1 (prévu par la spec, non requis) : il faut encore un proxy TLS devant
 `9443`.
 
